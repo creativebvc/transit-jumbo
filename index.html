@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BVC Transit Dashboard - Floating Cards</title>
+    <title>BVC Transit Dashboard - Jumbotron</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -270,7 +270,7 @@
                     <span>⬅️</span> 
                     Westbound (Tuscany / 69 St)
                 </div>
-                <div class="train-list" id="westbound-list">
+                <div class="train-list" id="westbound-container">
                     <div class="train-card" style="opacity:0.6; justify-content:center;">Loading schedule...</div>
                 </div>
             </div>
@@ -280,7 +280,7 @@
                     Eastbound (Saddletowne / Somerset)
                     <span>➡️</span>
                 </div>
-                <div class="train-list" id="eastbound-list">
+                <div class="train-list" id="eastbound-container">
                     <div class="train-card" style="opacity:0.6; justify-content:center;">Loading schedule...</div>
                 </div>
             </div>
@@ -333,31 +333,23 @@
             `;
         };
 
-        // 3. Render Adapter
-        window.renderColumn = function(containerId, trains) {
-            // Map generic container IDs to our specific list IDs
-            const listId = containerId.includes('west') ? 'westbound-list' : 'eastbound-list';
-            const container = document.getElementById(listId);
-            
-            if (!container) return;
+        // 3. Render Adapter 
+window.renderColumn = function(containerId, trains) {
+    
+    const container = document.getElementById(containerId);
+    
+    if (!container) return;
 
-            // Display top 2 trains to fit vertically within the 572px height constraints
-            const visibleTrains = trains.slice(0, 2);
+    // Display top 2 trains to fit vertically within the 572px constraints
+    const visibleTrains = trains.slice(0, 2);
 
-            if (visibleTrains.length === 0) {
-                container.innerHTML = `<div class="train-card" style="opacity:0.7; justify-content:center;">No trains scheduled</div>`;
-            } else {
-                container.innerHTML = visibleTrains.map((train, index) => window.createTrainCard(train, index)).join('');
-            }
-        };
-
-        // 4. Start Engine
-        window.addEventListener('load', () => {
-            console.log("Starting Floating-Card Engine...");
-            if (typeof startTransitDashboard === 'function') {
-                startTransitDashboard();
-            }
-        });
+    if (visibleTrains.length === 0) {
+        // This handles the "Empty" state if the engine calls renderColumn with 0 trains
+        container.innerHTML = `<div class="train-card" style="opacity:0.7; justify-content:center;">No trains scheduled</div>`;
+    } else {
+        container.innerHTML = visibleTrains.map((train, index) => window.createTrainCard(train, index)).join('');
+    }
+};
     </script>
 </body>
 </html>
