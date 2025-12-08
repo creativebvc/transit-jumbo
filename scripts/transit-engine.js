@@ -20,9 +20,10 @@ function unixToMinutes(eta) {
     const now = Math.floor(Date.now() / 1000);
     const diff = eta - now;
     
-    // FILTER: If the train departed more than 30 seconds ago (-0.5 min), 
+    // FILTER: If the train departed more than 60 seconds ago (-1 min), 
     // we return -1 to indicate it should be hidden immediately.
-    if (diff < -30) return -1; 
+    // (Increased from 30s to 60s to account for API lag)
+    if (diff < -60) return -1; 
     
     // Otherwise return minutes (clamped to 0 minimum)
     return Math.max(0, Math.round(diff / 60));
@@ -175,6 +176,8 @@ async function buildTrainList() {
 async function startTransitDashboard() {
     console.log("🚀 Dashboard Engine Started");
     
+    let failureCount = 0; // Track consecutive failures
+
     async function update() {
         // Toggle Heartbeat (Yellow = Loading)
         const liveDot = document.getElementById('live-indicator');
@@ -187,26 +190,44 @@ async function startTransitDashboard() {
             // 2. Check Alerts
             await updateAlertBanner();
 
-            // 3. Empty State Check (Late Night)
-            const grid = document.querySelector('.transit-grid');
+            // 3. Empty State Check
             if (westTrains.length === 0 && eastTrains.length === 0) {
-                 // You could show a "Service Closed" message here
-                 console.log("No trains found (Service Closed or No Data)");
+                 const msg = "<div style='opacity:0.5; padding:20px; font-size: 18px;'>No scheduled trains found.</div>";
+                 const westCont = document.getElementById('westbound-container');
+                 const eastCont = document.getElementById('eastbound-container');
+                 
+                 if (westCont) westCont.innerHTML = msg;
+                 if (eastCont) eastCont.innerHTML = msg;
             }
 
             // 4. Render
             if (typeof window.renderColumn === "function") {
-                window.renderColumn("westbound-container", westTrains);
-                window.renderColumn("eastbound-container", eastTrains);
+                // Only render if we actually have trains, otherwise we leave the "No scheduled trains" msg
+                if (westTrains.length > 0) window.renderColumn("westbound-container", westTrains);
+                if (eastTrains.length > 0) window.renderColumn("eastbound-container", eastTrains);
             }
 
-            // Success: Turn Heartbeat Green
+            // Success: Turn Heartbeat Green and Reset Failures
             if (liveDot) liveDot.classList.remove('stale');
+            failureCount = 0; 
             console.log(`Updated: ${westTrains.length} West, ${eastTrains.length} East`);
 
         } catch (e) {
             console.error("Transit Engine Error:", e);
+            
             // Leave Heartbeat Yellow/Orange to indicate stale data
+            failureCount++;
+
+            // SAFETY: If we fail 3 times (approx 90 seconds), clear the board
+            // so we don't show old/incorrect times to students.
+            if (failureCount >= 3) {
+                const safeMessage = `<div style="font-size: 20px; opacity: 0.7; padding: 20px;">Updating connection...</div>`;
+                const westCont = document.getElementById('westbound-container');
+                const eastCont = document.getElementById('eastbound-container');
+                
+                if (westCont) westCont.innerHTML = safeMessage;
+                if (eastCont) eastCont.innerHTML = safeMessage;
+            }
         }
     }
 
