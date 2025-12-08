@@ -3,10 +3,7 @@
 // ==========================================
 
 // Verified Stop IDs for City Hall / Bow Valley College (Free Fare Zone)
-// Westbound (Towards Tuscany / 69 St / Downtown West)
 const STOP_CITY_HALL_WEST = "6822"; 
-
-// Eastbound (Towards Somerset / Saddletowne / NE / South)
 const STOP_CITY_HALL_EAST = "6831"; 
 
 const ROUTE_RED = "201";
@@ -16,22 +13,29 @@ const ROUTE_BLUE = "202";
 // UTILITIES
 // ==========================================
 
-function unixToMinutes(eta) {
-    const now = Math.floor(Date.now() / 1000);
-    const diff = eta - now;
+function getSafeLong(val) {
+    if (!val) return 0;
+    if (typeof val === 'number') return val;
+    if (typeof val.toNumber === 'function') return val.toNumber();
+    if (val.low !== undefined) return val.low;
+    return 0;
+}
+
+function calculateMinutes(eta, referenceTime) {
+    // CLOCK-PROOF FIX: Compare against Server Time, not Computer Time
+    const diff = eta - referenceTime;
     
-    // FILTER: If the train departed more than 60 seconds ago (-1 min), 
-    // we return -1 to indicate it should be hidden immediately.
-    if (diff < -60) return -1; 
+    // Filter: Allow trains that departed up to 90 seconds ago (buffer)
+    if (diff < -90) return -1; 
     
-    // Otherwise return minutes (clamped to 0 minimum)
+    // Return minutes
     return Math.max(0, Math.round(diff / 60));
 }
 
 function mapRouteColor(routeId) {
     if (routeId.includes(ROUTE_RED)) return "red";
     if (routeId.includes(ROUTE_BLUE)) return "blue";
-    return "blue"; // Default fallback
+    return "blue"; 
 }
 
 function getDestinationName(lineColor, direction) {
@@ -51,33 +55,32 @@ async function updateAlertBanner() {
     const textSpan = document.getElementById('alert-text');
     if (!banner || !textSpan) return;
 
-    // Fetch Alerts
-    const feed = await fetchGTFSRT(URL_ALERTS);
-    
-    let activeAlertMsg = "";
+    try {
+        const feed = await fetchGTFSRT(URL_ALERTS);
+        let activeAlertMsg = "";
 
-    if (feed && feed.entity) {
-        // Find relevant alerts for Red (201) or Blue (202) lines
-        const alertEntity = feed.entity.find(e => 
-            e.alert && e.alert.informedEntity.some(ie => 
-                ie.routeId && (ie.routeId.includes('201') || ie.routeId.includes('202'))
-            )
-        );
+        if (feed && feed.entity) {
+            const alertEntity = feed.entity.find(e => 
+                e.alert && e.alert.informedEntity && e.alert.informedEntity.some(ie => 
+                    ie.routeId && (ie.routeId.includes('201') || ie.routeId.includes('202'))
+                )
+            );
 
-        if (alertEntity && alertEntity.alert.headerText) {
-            // Get the English text (usually index 0)
-            activeAlertMsg = alertEntity.alert.headerText.translation[0].text;
+            if (alertEntity && alertEntity.alert.headerText && alertEntity.alert.headerText.translation) {
+                activeAlertMsg = alertEntity.alert.headerText.translation[0].text;
+            }
         }
-    }
 
-    // Toggle Visibility
-    if (activeAlertMsg) {
-        textSpan.innerText = activeAlertMsg;
-        textSpan.classList.add('scrolling');
-        banner.classList.remove('hidden');
-    } else {
-        banner.classList.add('hidden');
-        textSpan.classList.remove('scrolling');
+        if (activeAlertMsg) {
+            textSpan.innerText = activeAlertMsg;
+            textSpan.classList.add('scrolling');
+            banner.classList.remove('hidden');
+        } else {
+            banner.classList.add('hidden');
+            textSpan.classList.remove('scrolling');
+        }
+    } catch(e) {
+        console.warn("Alert fetch failed", e);
     }
 }
 
@@ -93,49 +96,53 @@ async function buildTrainList() {
         return { westTrains: [], eastTrains: [] };
     }
 
+    // --- TIME SYNC FIX ---
+    // Use the timestamp from the City's server, NOT your computer's clock.
+    let serverTime = Math.floor(Date.now() / 1000); 
+    if (feed.header && feed.header.timestamp) {
+        const feedTs = getSafeLong(feed.header.timestamp);
+        if (feedTs > 0) serverTime = feedTs;
+    }
+    // ---------------------
+
     const westTrains = [];
     const eastTrains = [];
-    const processedTrips = new Set(); // For Deduplication
+    const processedTrips = new Set();
+    
+    // DEBUG: Count what we see
+    let debugScan = { total: 0, redBlue: 0, relevantStops: 0 };
 
     for (const entity of feed.entity) {
         if (!entity.tripUpdate || !entity.tripUpdate.stopTimeUpdate) continue;
 
         const trip = entity.tripUpdate;
         const tripId = trip.trip.tripId;
-
-        // 1. Ghost Train Check: Skip if we've already seen this Trip ID
+        
         if (processedTrips.has(tripId)) continue;
+        debugScan.total++;
 
         const routeId = trip.trip.routeId || "";
         if (!routeId.includes(ROUTE_RED) && !routeId.includes(ROUTE_BLUE)) continue;
+        debugScan.redBlue++;
 
         const lineColor = mapRouteColor(routeId);
 
         for (const stopUpdate of trip.stopTimeUpdate) {
             const stopId = stopUpdate.stopId;
             const arrival = stopUpdate.arrival || stopUpdate.departure; 
-
             if (!arrival || !arrival.time) continue;
 
-            // 2. CRASH FIX: Safe Timestamp Conversion (Robust Duck Typing)
-            let timeVal = arrival.time;
-            
-            // Check if it has a .toNumber() method (Standard Protobuf behavior)
-            if (timeVal && typeof timeVal.toNumber === 'function') {
-                timeVal = timeVal.toNumber();
-            } 
-            // Check if it looks like a Long object with low/high bits
-            else if (typeof timeVal === 'object' && timeVal !== null && 'low' in timeVal) {
-                 timeVal = timeVal.low;
+            const timeVal = getSafeLong(arrival.time);
+            const minutes = calculateMinutes(timeVal, serverTime);
+
+            // Check if this is our stop (for debugging)
+            if (stopId === STOP_CITY_HALL_WEST || stopId === STOP_CITY_HALL_EAST) {
+                debugScan.relevantStops++;
             }
-            // Otherwise, assume it's already a plain number
 
-            const minutes = unixToMinutes(timeVal);
-
-            // 3. Filter Invalid Times (-1 = departed, >60 = too far)
             if (minutes === -1 || minutes > 60) continue;
 
-            // --- WESTBOUND MATCH ---
+            // --- WESTBOUND ---
             if (stopId === STOP_CITY_HALL_WEST) {
                 westTrains.push({
                     destination: getDestinationName(lineColor, 'WEST'),
@@ -148,7 +155,7 @@ async function buildTrainList() {
                 break; 
             }
 
-            // --- EASTBOUND MATCH ---
+            // --- EASTBOUND ---
             if (stopId === STOP_CITY_HALL_EAST) {
                 eastTrains.push({
                     destination: getDestinationName(lineColor, 'EAST'),
@@ -162,6 +169,9 @@ async function buildTrainList() {
             }
         }
     }
+
+    // Print the DEBUG SCAN to the console
+    console.log(`🔍 SCAN REPORT: Saw ${debugScan.total} trips. ${debugScan.redBlue} were Red/Blue. ${debugScan.relevantStops} stopped at City Hall.`);
 
     // Sort by time
     westTrains.sort((a, b) => a.minutes - b.minutes);
@@ -178,65 +188,45 @@ async function buildTrainList() {
 // ==========================================
 
 async function startTransitDashboard() {
-    console.log("🚀 Dashboard Engine Started");
+    console.log("🚀 CLOCK-PROOF ENGINE v3 STARTED");
     
-    let failureCount = 0; // Track consecutive failures
+    let failureCount = 0;
 
     async function update() {
-        // Toggle Heartbeat (Yellow = Loading)
         const liveDot = document.getElementById('live-indicator');
         if (liveDot) liveDot.classList.add('stale');
 
         try {
-            // 1. Get Trains
             const { westTrains, eastTrains } = await buildTrainList();
-            
-            // 2. Check Alerts
             await updateAlertBanner();
 
-            // 3. Empty State Check
-            if (westTrains.length === 0 && eastTrains.length === 0) {
-                 const msg = "<div style='opacity:0.5; padding:20px; font-size: 18px;'>No scheduled trains found.</div>";
-                 const westCont = document.getElementById('westbound-container');
-                 const eastCont = document.getElementById('eastbound-container');
-                 
-                 if (westCont) westCont.innerHTML = msg;
-                 if (eastCont) eastCont.innerHTML = msg;
-            }
+            // Render
+            const westCont = document.getElementById('westbound-container');
+            const eastCont = document.getElementById('eastbound-container');
 
-            // 4. Render
+            // Pass data to the HTML renderer
             if (typeof window.renderColumn === "function") {
-                if (westTrains.length > 0) window.renderColumn("westbound-container", westTrains);
-                if (eastTrains.length > 0) window.renderColumn("eastbound-container", eastTrains);
+                window.renderColumn("westbound-container", westTrains);
+                window.renderColumn("eastbound-container", eastTrains);
             }
 
-            // Success: Turn Heartbeat Green and Reset Failures
             if (liveDot) liveDot.classList.remove('stale');
             failureCount = 0; 
-            console.log(`Updated: ${westTrains.length} West, ${eastTrains.length} East`);
+            console.log(`✅ Valid Trains: ${westTrains.length} West, ${eastTrains.length} East`);
 
         } catch (e) {
             console.error("Transit Engine Error:", e);
-            
-            // Leave Heartbeat Yellow/Orange to indicate stale data
             failureCount++;
-
-            // SAFETY: If we fail 3 times (approx 90 seconds), clear the board
-            // so we don't show old/incorrect times to students.
             if (failureCount >= 3) {
-                const safeMessage = `<div style="font-size: 20px; opacity: 0.7; padding: 20px;">Updating connection...</div>`;
+                const safeMessage = `<div style="font-size: 20px; opacity: 0.7; padding: 20px;">Reconnecting...</div>`;
                 const westCont = document.getElementById('westbound-container');
                 const eastCont = document.getElementById('eastbound-container');
-                
                 if (westCont) westCont.innerHTML = safeMessage;
                 if (eastCont) eastCont.innerHTML = safeMessage;
             }
         }
     }
 
-    // Initial run
     update();
-    
-    // Refresh every 30 seconds
     setInterval(update, 30000); 
 }
