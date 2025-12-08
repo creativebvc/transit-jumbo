@@ -308,7 +308,7 @@
         setInterval(updateClock, 1000);
         updateClock();
 
-        // 2. Card Creator Function (Matches the reference design)
+        // 2. Card Creator Function
         window.createTrainCard = function(train, index) {
             const lineColor = train.line === 'red' ? 'line-red' : 'line-blue';
             const lineName = train.line === 'red' ? '201 Red Line' : '202 Blue Line';
@@ -334,22 +334,32 @@
         };
 
         // 3. Render Adapter 
-window.renderColumn = function(containerId, trains) {
-    
-    const container = document.getElementById(containerId);
-    
-    if (!container) return;
+        window.renderColumn = function(containerId, trains) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
 
-    // Display top 2 trains to fit vertically within the 572px constraints
-    const visibleTrains = trains.slice(0, 2);
+            // Display top 2 trains to fit vertically
+            const visibleTrains = trains.slice(0, 2);
 
-    if (visibleTrains.length === 0) {
-        // This handles the "Empty" state if the engine calls renderColumn with 0 trains
-        container.innerHTML = `<div class="train-card" style="opacity:0.7; justify-content:center;">No trains scheduled</div>`;
-    } else {
-        container.innerHTML = visibleTrains.map((train, index) => window.createTrainCard(train, index)).join('');
-    }
-};
+            if (visibleTrains.length === 0) {
+                container.innerHTML = `<div class="train-card" style="opacity:0.7; justify-content:center;">No trains scheduled</div>`;
+            } else {
+                container.innerHTML = visibleTrains.map((train, index) => window.createTrainCard(train, index)).join('');
+            }
+        };
+
+        // ==========================================
+        // 4. START THE ENGINE (This was missing!)
+        // ==========================================
+        // We wait 1 second to ensure all scripts are fully loaded
+        setTimeout(() => {
+            if (typeof startTransitDashboard === "function") {
+                startTransitDashboard();
+            } else {
+                console.error("Engine script not found!");
+            }
+        }, 1000);
+
     </script>
 </body>
 </html>
