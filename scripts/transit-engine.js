@@ -22,7 +22,6 @@ function unixToMinutes(eta) {
     
     // FILTER: If the train departed more than 60 seconds ago (-1 min), 
     // we return -1 to indicate it should be hidden immediately.
-    // (Increased from 30s to 60s to account for API lag)
     if (diff < -60) return -1; 
     
     // Otherwise return minutes (clamped to 0 minimum)
@@ -118,13 +117,18 @@ async function buildTrainList() {
 
             if (!arrival || !arrival.time) continue;
 
-            // 2. Safe Timestamp Conversion (Handle Protobuf Longs)
+            // 2. CRASH FIX: Safe Timestamp Conversion (Robust Duck Typing)
             let timeVal = arrival.time;
-            if (protobuf.util.Long.isLong(timeVal)) {
+            
+            // Check if it has a .toNumber() method (Standard Protobuf behavior)
+            if (timeVal && typeof timeVal.toNumber === 'function') {
                 timeVal = timeVal.toNumber();
-            } else if (typeof timeVal === 'object' && timeVal.low) {
+            } 
+            // Check if it looks like a Long object with low/high bits
+            else if (typeof timeVal === 'object' && timeVal !== null && 'low' in timeVal) {
                  timeVal = timeVal.low;
             }
+            // Otherwise, assume it's already a plain number
 
             const minutes = unixToMinutes(timeVal);
 
@@ -202,7 +206,6 @@ async function startTransitDashboard() {
 
             // 4. Render
             if (typeof window.renderColumn === "function") {
-                // Only render if we actually have trains, otherwise we leave the "No scheduled trains" msg
                 if (westTrains.length > 0) window.renderColumn("westbound-container", westTrains);
                 if (eastTrains.length > 0) window.renderColumn("eastbound-container", eastTrains);
             }
