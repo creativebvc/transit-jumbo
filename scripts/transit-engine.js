@@ -42,7 +42,7 @@ function getDestinationName(lineColor, direction) {
 }
 
 // ==========================================
-// ALERT LOGIC (UPDATED FOR ALWAYS-ON FOOTER)
+// ALERT LOGIC
 // ==========================================
 
 async function updateAlertBanner() {
@@ -66,20 +66,16 @@ async function updateAlertBanner() {
             }
         }
 
-        // TOGGLE STATES
         if (activeAlertMsg) {
-            // 🚨 ALERT STATE
             textSpan.innerText = "⚠️ SERVICE ALERT: " + activeAlertMsg;
-            footer.className = 'status-alert'; // Triggers Red + Scroll
+            footer.className = 'status-alert'; 
         } else {
-            // ✅ NORMAL STATE
             textSpan.innerText = "✅ Normal Service: All trains running on schedule.";
-            footer.className = 'status-ok'; // Triggers Green + Static
+            footer.className = 'status-ok'; 
         }
     } catch(e) {
         console.warn("Alert fetch failed", e);
-        // Fallback to normal if fetch fails to avoid scaring people
-        textSpan.innerText = "✅ Normal Service"; 
+        textSpan.innerText = "✅ Normal Service: All trains running on schedule."; 
         footer.className = 'status-ok';
     }
 }
@@ -169,7 +165,7 @@ async function buildTrainList() {
 // ==========================================
 
 async function startTransitDashboard() {
-    console.log("🚀 CLOCK-PROOF ENGINE v4 STARTED");
+    console.log("🚀 CLOCK-PROOF ENGINE v7 STARTED");
     
     let failureCount = 0;
 
@@ -184,12 +180,23 @@ async function startTransitDashboard() {
             const westCont = document.getElementById('westbound-container');
             const eastCont = document.getElementById('eastbound-container');
 
-            if (typeof window.renderColumn === "function") {
-                window.renderColumn("westbound-container", westTrains);
-                window.renderColumn("eastbound-container", eastTrains);
+            // --- UX FIX: EMPTY STATE ---
+            if (westTrains.length === 0 && eastTrains.length === 0) {
+                 // Changed from "No trains found" to "Loading schedule..."
+                 // Added 'train-card' class so it looks beautiful (Glass UI)
+                 const msg = `<div class="train-card" style="opacity:0.6; justify-content:center;">Loading schedule...</div>`;
+                 
+                 if (westCont) westCont.innerHTML = msg;
+                 if (eastCont) eastCont.innerHTML = msg;
+            } else {
+                // Normal Render
+                if (typeof window.renderColumn === "function") {
+                    window.renderColumn("westbound-container", westTrains);
+                    window.renderColumn("eastbound-container", eastTrains);
+                }
             }
 
-            // Always run alert check (it now handles the 'Normal' state too)
+            // Check Alerts
             await updateAlertBanner();
 
             if (liveDot) liveDot.classList.remove('stale');
@@ -199,7 +206,8 @@ async function startTransitDashboard() {
             console.error("Transit Engine Error:", e);
             failureCount++;
             if (failureCount >= 3) {
-                const safeMessage = `<div style="font-size: 20px; opacity: 0.7; padding: 20px;">Reconnecting...</div>`;
+                // This message also uses the card style now
+                const safeMessage = `<div class="train-card" style="opacity:0.6; justify-content:center;">Reconnecting...</div>`;
                 const westCont = document.getElementById('westbound-container');
                 const eastCont = document.getElementById('eastbound-container');
                 if (westCont) westCont.innerHTML = safeMessage;
