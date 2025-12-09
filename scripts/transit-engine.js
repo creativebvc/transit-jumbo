@@ -22,13 +22,8 @@ function getSafeLong(val) {
 }
 
 function calculateMinutes(eta, referenceTime) {
-    // CLOCK-PROOF FIX: Compare against Server Time, not Computer Time
     const diff = eta - referenceTime;
-    
-    // Filter: Allow trains that departed up to 90 seconds ago (buffer)
     if (diff < -90) return -1; 
-    
-    // Return minutes
     return Math.max(0, Math.round(diff / 60));
 }
 
@@ -47,13 +42,13 @@ function getDestinationName(lineColor, direction) {
 }
 
 // ==========================================
-// ALERT LOGIC
+// ALERT LOGIC (UPDATED FOR ALWAYS-ON FOOTER)
 // ==========================================
 
 async function updateAlertBanner() {
-    const banner = document.getElementById('alert-banner');
-    const textSpan = document.getElementById('alert-text');
-    if (!banner || !textSpan) return;
+    const footer = document.getElementById('service-footer');
+    const textSpan = document.getElementById('service-text');
+    if (!footer || !textSpan) return;
 
     try {
         const feed = await fetchGTFSRT(URL_ALERTS);
@@ -71,16 +66,21 @@ async function updateAlertBanner() {
             }
         }
 
+        // TOGGLE STATES
         if (activeAlertMsg) {
-            textSpan.innerText = activeAlertMsg;
-            textSpan.classList.add('scrolling');
-            banner.classList.remove('hidden');
+            // 🚨 ALERT STATE
+            textSpan.innerText = "⚠️ SERVICE ALERT: " + activeAlertMsg;
+            footer.className = 'status-alert'; // Triggers Red + Scroll
         } else {
-            banner.classList.add('hidden');
-            textSpan.classList.remove('scrolling');
+            // ✅ NORMAL STATE
+            textSpan.innerText = "✅ Normal Service: All trains running on schedule.";
+            footer.className = 'status-ok'; // Triggers Green + Static
         }
     } catch(e) {
         console.warn("Alert fetch failed", e);
+        // Fallback to normal if fetch fails to avoid scaring people
+        textSpan.innerText = "✅ Normal Service"; 
+        footer.className = 'status-ok';
     }
 }
 
@@ -96,22 +96,16 @@ async function buildTrainList() {
         return { westTrains: [], eastTrains: [] };
     }
 
-    // --- TIME SYNC FIX ---
-    // Use the timestamp from the City's server, NOT your computer's clock.
     let serverTime = Math.floor(Date.now() / 1000); 
     if (feed.header && feed.header.timestamp) {
         const feedTs = getSafeLong(feed.header.timestamp);
         if (feedTs > 0) serverTime = feedTs;
     }
-    // ---------------------
 
     const westTrains = [];
     const eastTrains = [];
     const processedTrips = new Set();
     
-    // DEBUG: Count what we see
-    let debugScan = { total: 0, redBlue: 0, relevantStops: 0 };
-
     for (const entity of feed.entity) {
         if (!entity.tripUpdate || !entity.tripUpdate.stopTimeUpdate) continue;
 
@@ -119,11 +113,9 @@ async function buildTrainList() {
         const tripId = trip.trip.tripId;
         
         if (processedTrips.has(tripId)) continue;
-        debugScan.total++;
 
         const routeId = trip.trip.routeId || "";
         if (!routeId.includes(ROUTE_RED) && !routeId.includes(ROUTE_BLUE)) continue;
-        debugScan.redBlue++;
 
         const lineColor = mapRouteColor(routeId);
 
@@ -135,14 +127,8 @@ async function buildTrainList() {
             const timeVal = getSafeLong(arrival.time);
             const minutes = calculateMinutes(timeVal, serverTime);
 
-            // Check if this is our stop (for debugging)
-            if (stopId === STOP_CITY_HALL_WEST || stopId === STOP_CITY_HALL_EAST) {
-                debugScan.relevantStops++;
-            }
-
             if (minutes === -1 || minutes > 60) continue;
 
-            // --- WESTBOUND ---
             if (stopId === STOP_CITY_HALL_WEST) {
                 westTrains.push({
                     destination: getDestinationName(lineColor, 'WEST'),
@@ -155,7 +141,6 @@ async function buildTrainList() {
                 break; 
             }
 
-            // --- EASTBOUND ---
             if (stopId === STOP_CITY_HALL_EAST) {
                 eastTrains.push({
                     destination: getDestinationName(lineColor, 'EAST'),
@@ -170,10 +155,6 @@ async function buildTrainList() {
         }
     }
 
-    // Print the DEBUG SCAN to the console
-    console.log(`🔍 SCAN REPORT: Saw ${debugScan.total} trips. ${debugScan.redBlue} were Red/Blue. ${debugScan.relevantStops} stopped at City Hall.`);
-
-    // Sort by time
     westTrains.sort((a, b) => a.minutes - b.minutes);
     eastTrains.sort((a, b) => a.minutes - b.minutes);
 
@@ -188,7 +169,7 @@ async function buildTrainList() {
 // ==========================================
 
 async function startTransitDashboard() {
-    console.log("🚀 CLOCK-PROOF ENGINE v3 STARTED");
+    console.log("🚀 CLOCK-PROOF ENGINE v4 STARTED");
     
     let failureCount = 0;
 
@@ -198,21 +179,21 @@ async function startTransitDashboard() {
 
         try {
             const { westTrains, eastTrains } = await buildTrainList();
-            await updateAlertBanner();
-
+            
             // Render
             const westCont = document.getElementById('westbound-container');
             const eastCont = document.getElementById('eastbound-container');
 
-            // Pass data to the HTML renderer
             if (typeof window.renderColumn === "function") {
                 window.renderColumn("westbound-container", westTrains);
                 window.renderColumn("eastbound-container", eastTrains);
             }
 
+            // Always run alert check (it now handles the 'Normal' state too)
+            await updateAlertBanner();
+
             if (liveDot) liveDot.classList.remove('stale');
             failureCount = 0; 
-            console.log(`✅ Valid Trains: ${westTrains.length} West, ${eastTrains.length} East`);
 
         } catch (e) {
             console.error("Transit Engine Error:", e);
