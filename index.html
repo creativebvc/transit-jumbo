@@ -209,7 +209,7 @@
         window.renderColumn = function(containerId, trains) {
             const container = document.getElementById(containerId);
             if (!container) return;
-            const visibleTrains = trains.slice(0, 3);
+            const visibleTrains = trains.slice(0, 2);
             if (visibleTrains.length === 0) {
                 container.innerHTML = `<div class="train-card" style="opacity:0.7; justify-content:center;">Loading schedule...</div>`;
             } else {
@@ -225,5 +225,6 @@
     </script>
 </body>
 </html>
+
 
 
