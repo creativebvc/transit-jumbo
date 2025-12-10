@@ -34,7 +34,9 @@
         }
 
         .dashboard-wrapper {
-            width: 1748px; height: 572px;
+            /* FIXED WIDTH & HEIGHT */
+            width: 1848px; 
+            height: 672px; /* Updated to 672px */
             position: relative;
             overflow: hidden; 
         }
@@ -63,8 +65,7 @@
         /* CONTENT */
         .content-area {
             position: absolute; top: 200px; left: 50px; right: 50px; 
-            /* FOOTER FIX: Set to 0 so the footer floats over this area without pushing it */
-            bottom: 0px; 
+            bottom: 0px; /* Ignored footer height */
             display: flex; justify-content: space-between; gap: 60px;
         }
         .direction-column { flex: 1; display: flex; flex-direction: column; gap: 20px; }
@@ -86,14 +87,10 @@
         .line-blue { background: var(--ct-blue); }
         
         .dest-info { display: flex; flex-direction: column; justify-content: center; margin-left: 30px; }
-        
-        /* RESTORED YOUR FONTS: 30px / 20px */
         .dest-name { font-size: 30px; font-weight: 700; line-height: 1.1; letter-spacing: -0.5px; }
         .line-name { font-size: 20px; font-weight: 500; opacity: 0.9; margin-top: 4px; }
         
         .arrival-info { text-align: right; display: flex; flex-direction: column; align-items: flex-end; }
-        
-        /* RESTORED YOUR FONTS: 30px / 18px */
         .minutes { font-size: 30px; font-weight: 700; line-height: 1; }
         .minutes span { font-size: 18px; font-weight: 500; margin-left: 2px; }
         
@@ -107,9 +104,7 @@
         .pulse-text { animation: pulse 1.5s infinite; }
         @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
 
-        /* ========================================
-           SERVICE FOOTER
-           ======================================== */
+        /* SERVICE FOOTER */
         #service-footer {
             position: absolute; bottom: 0; left: 0; width: 100%; 
             height: 40px; 
@@ -119,7 +114,7 @@
             font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
             color: white; overflow: hidden; white-space: nowrap;
             backdrop-filter: blur(5px);
-            z-index: 10; /* Sits on top */
+            z-index: 100;
         }
 
         .status-ok { background-color: var(--status-green); }
@@ -178,7 +173,7 @@
     <script src="https://cdn.jsdelivr.net/npm/protobufjs@7.2.4/dist/protobuf.min.js"></script>
     <script src="scripts/proto-loader.js"></script>
     <script src="scripts/gtfs-rt-api.js"></script>
-    <script src="scripts/transit-engine.js?v=7"></script>
+    <script src="scripts/transit-engine.js?v=12"></script>
 
     <script>
         function updateClock() {
@@ -216,7 +211,7 @@
             if (!container) return;
             const visibleTrains = trains.slice(0, 2);
             if (visibleTrains.length === 0) {
-                container.innerHTML = `<div class="train-card" style="opacity:0.7; justify-content:center;">No trains scheduled</div>`;
+                container.innerHTML = `<div class="train-card" style="opacity:0.7; justify-content:center;">Loading schedule...</div>`;
             } else {
                 container.innerHTML = visibleTrains.map((train, index) => window.createTrainCard(train, index)).join('');
             }
