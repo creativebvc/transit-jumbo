@@ -16,7 +16,7 @@
             --text-primary: #ffffff;
             --text-secondary: rgba(255, 255, 255, 0.9);
             
-            /* UPDATED COLORS */
+            /* COLORS */
             --status-green: rgba(0, 255, 150, 0.5); 
             --status-alert: rgba(255, 0, 42, 0.5);
         }
@@ -41,7 +41,7 @@
 
         /* HEADER */
         .header-row {
-            position: absolute; top: 0px; left: 50px; right: 50px;
+            position: absolute; top: 40px; left: 50px; right: 50px;
             display: flex; justify-content: space-between; align-items: flex-start; 
         }
         .station-group { display: flex; flex-direction: column; gap: 30px; }
@@ -62,8 +62,9 @@
 
         /* CONTENT */
         .content-area {
-            position: absolute; top: 170px; left: 50px; right: 50px; 
-            bottom: 40px; 
+            position: absolute; top: 200px; left: 50px; right: 50px; 
+            /* FOOTER FIX: Set to 0 so the footer floats over this area without pushing it */
+            bottom: 0px; 
             display: flex; justify-content: space-between; gap: 60px;
         }
         .direction-column { flex: 1; display: flex; flex-direction: column; gap: 20px; }
@@ -83,12 +84,19 @@
         .line-strip { position: absolute; left: 0; top: 0; bottom: 0; width: 12px; border-radius: 0; }
         .line-red { background: var(--ct-red); }
         .line-blue { background: var(--ct-blue); }
+        
         .dest-info { display: flex; flex-direction: column; justify-content: center; margin-left: 30px; }
-        .dest-name { font-size: 32px; font-weight: 700; line-height: 1.1; letter-spacing: -0.5px; }
-        .line-name { font-size: 18px; font-weight: 500; opacity: 0.9; margin-top: 4px; }
+        
+        /* RESTORED YOUR FONTS: 30px / 20px */
+        .dest-name { font-size: 30px; font-weight: 700; line-height: 1.1; letter-spacing: -0.5px; }
+        .line-name { font-size: 20px; font-weight: 500; opacity: 0.9; margin-top: 4px; }
+        
         .arrival-info { text-align: right; display: flex; flex-direction: column; align-items: flex-end; }
-        .minutes { font-size: 32px; font-weight: 700; line-height: 1; }
-        .minutes span { font-size: 20px; font-weight: 500; margin-left: 2px; }
+        
+        /* RESTORED YOUR FONTS: 30px / 18px */
+        .minutes { font-size: 30px; font-weight: 700; line-height: 1; }
+        .minutes span { font-size: 18px; font-weight: 500; margin-left: 2px; }
+        
         .status-badge {
             font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
             background: rgba(0,0,0,0.1); padding: 4px 8px; border-radius: 4px;
@@ -100,27 +108,27 @@
         @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
 
         /* ========================================
-           SERVICE FOOTER (UPDATED)
+           SERVICE FOOTER
            ======================================== */
         #service-footer {
             position: absolute; bottom: 0; left: 0; width: 100%; 
             height: 40px; 
             display: flex; align-items: center;
-            justify-content: flex-start; /* Always align left so it scrolls from right */
+            justify-content: flex-start;
             font-size: 14px; 
             font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
             color: white; overflow: hidden; white-space: nowrap;
             backdrop-filter: blur(5px);
+            z-index: 10; /* Sits on top */
         }
 
         .status-ok { background-color: var(--status-green); }
         .status-alert { background-color: var(--status-alert); }
 
-        /* Always Scroll Logic */
         #service-text {
             display: inline-block;
-            padding-left: 100%; /* Pushes text off-screen to the right initially */
-            animation: marquee 30s linear infinite; /* Slower 30s scroll */
+            padding-left: 100%; 
+            animation: marquee 30s linear infinite; 
         }
         
         @keyframes marquee {
@@ -170,7 +178,7 @@
     <script src="https://cdn.jsdelivr.net/npm/protobufjs@7.2.4/dist/protobuf.min.js"></script>
     <script src="scripts/proto-loader.js"></script>
     <script src="scripts/gtfs-rt-api.js"></script>
-    <script src="scripts/transit-engine.js?v=6"></script>
+    <script src="scripts/transit-engine.js?v=7"></script>
 
     <script>
         function updateClock() {
