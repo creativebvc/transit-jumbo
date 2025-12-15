@@ -3,10 +3,7 @@ const URL_TRIP_UPDATES = "https://data.calgary.ca/download/gs4m-mdc2/application
 const URL_VEHICLE_POSITIONS = "https://data.calgary.ca/download/am7c-qe3u/application%2Foctet-stream";
 const URL_ALERTS = "https://data.calgary.ca/download/jhgn-ynqj/application%2Foctet-stream";
 
-// ==========================================
-// YOUR PRIVATE PROXY
-// ==========================================
-// I have added your specific worker URL here:
+// YOUR PROXY
 const PROXY_BASE = "https://bvctransitproxy.creative-018.workers.dev/?url=";
 
 async function fetchGTFSRT(targetUrl) {
@@ -16,7 +13,8 @@ async function fetchGTFSRT(targetUrl) {
     const FeedMessage = root.lookupType("transit_realtime.FeedMessage");
 
     try {
-        // Construct the full URL: Proxy + Target
+        // CLEAN FIX: We send the CLEAN URL.
+        // We trust the Worker to handle freshness via headers.
         const fetchUrl = PROXY_BASE + encodeURIComponent(targetUrl);
         
         const response = await fetch(fetchUrl);
@@ -24,11 +22,7 @@ async function fetchGTFSRT(targetUrl) {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         
         const buffer = await response.arrayBuffer();
-        
-        // Validation check
-        if (buffer.byteLength < 100) {
-            throw new Error("Data too short/corrupted");
-        }
+        if (buffer.byteLength < 100) throw new Error("Data too short");
 
         const decoded = FeedMessage.decode(new Uint8Array(buffer));
         return FeedMessage.toObject(decoded, { enums: String });
