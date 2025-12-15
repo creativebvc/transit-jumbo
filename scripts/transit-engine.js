@@ -1,11 +1,8 @@
 // ==========================================
 // CONFIGURATION
 // ==========================================
-// City Hall / Bow Valley College Stop IDs
 const STOP_CITY_HALL_WEST = "6822"; 
 const STOP_CITY_HALL_EAST = "6831"; 
-
-// Route Identifiers
 const ROUTE_RED = "201";
 const ROUTE_BLUE = "202";
 
@@ -21,7 +18,6 @@ function getSafeLong(val) {
 
 function calculateMinutes(eta, referenceTime) { 
     const diff = eta - referenceTime;
-    // Show trains that departed up to 90 seconds ago (boarding buffer)
     if (diff < -90) return -1; 
     return Math.max(0, Math.round(diff / 60)); 
 }
@@ -29,7 +25,7 @@ function calculateMinutes(eta, referenceTime) {
 function mapRouteColor(routeId) {
     if (routeId.includes(ROUTE_RED)) return "red";
     if (routeId.includes(ROUTE_BLUE)) return "blue";
-    return "blue"; // Default
+    return "blue"; 
 }
 
 function getDestinationName(lineColor, direction) {
@@ -44,58 +40,64 @@ function getDestinationName(lineColor, direction) {
 // ENGINE LOGIC
 // ==========================================
 async function startTransitDashboard() {
-    console.log("🚀 ENGINE ONLINE: PROCESSING DATA");
+    console.log("🚀 ENGINE ONLINE: HYBRID MODE v2");
 
     async function update() {
-        // 1. Fetch Data
         const feed = await getTripUpdates();
         
-        // 2. Safety Check
         if (!feed || !feed.entity) {
             console.warn("⚠️ Data fetch empty. Retrying in 30s...");
             return;
         }
 
-        // 3. Get Server Time
+        // Get Server Time
         let serverTime = Math.floor(Date.now() / 1000); 
         if (feed.header && feed.header.timestamp) {
             const feedTs = getSafeLong(feed.header.timestamp);
             if (feedTs > 0) serverTime = feedTs;
         }
 
-        // 4. Process Trains
         const westTrains = [];
         const eastTrains = [];
         const processedTrips = new Set();
         
+        // DEBUG: Log the first entity to see exactly what the data looks like
+        if (feed.entity.length > 0) {
+            console.log("🔍 Sample Data Structure:", feed.entity[0]);
+        }
+        
         for (const entity of feed.entity) {
-            if (!entity.tripUpdate || !entity.tripUpdate.stopTimeUpdate) continue;
+            // HYBRID CHECK: Handle both CamelCase and snake_case
+            const tripUpdate = entity.tripUpdate || entity.trip_update;
+            if (!tripUpdate) continue;
 
-            const trip = entity.tripUpdate;
-            const tripId = trip.trip.tripId;
+            const stopTimeUpdate = tripUpdate.stopTimeUpdate || tripUpdate.stop_time_update;
+            if (!stopTimeUpdate) continue;
+
+            const trip = tripUpdate.trip;
+            // HYBRID CHECK: tripId vs trip_id
+            const tripId = trip.tripId || trip.trip_id;
             
-            // Avoid duplicates
             if (processedTrips.has(tripId)) continue;
 
-            // Filter for Red/Blue Lines only
-            const routeId = trip.trip.routeId || "";
+            // HYBRID CHECK: routeId vs route_id
+            const routeId = trip.routeId || trip.route_id || "";
             if (!routeId.includes(ROUTE_RED) && !routeId.includes(ROUTE_BLUE)) continue;
 
             const lineColor = mapRouteColor(routeId);
 
-            // Find our stop in the list
-            for (const stopUpdate of trip.stopTimeUpdate) {
-                const stopId = stopUpdate.stopId;
+            for (const stopUpdate of stopTimeUpdate) {
+                // HYBRID CHECK: stopId vs stop_id
+                const stopId = stopUpdate.stopId || stopUpdate.stop_id;
                 const arrival = stopUpdate.arrival || stopUpdate.departure; 
+                
                 if (!arrival || !arrival.time) continue;
 
                 const timeVal = getSafeLong(arrival.time);
                 const minutes = calculateMinutes(timeVal, serverTime);
 
-                // Filter: Only show trains in next 60 mins
                 if (minutes === -1 || minutes > 60) continue;
 
-                // Westbound (Tuscany / 69 St)
                 if (stopId === STOP_CITY_HALL_WEST) {
                     westTrains.push({
                         destination: getDestinationName(lineColor, 'WEST'),
@@ -108,7 +110,6 @@ async function startTransitDashboard() {
                     break; 
                 }
 
-                // Eastbound (Saddletowne / Somerset)
                 if (stopId === STOP_CITY_HALL_EAST) {
                     eastTrains.push({
                         destination: getDestinationName(lineColor, 'EAST'),
@@ -123,20 +124,17 @@ async function startTransitDashboard() {
             }
         }
 
-        // 5. Sort by time
         westTrains.sort((a, b) => a.minutes - b.minutes);
         eastTrains.sort((a, b) => a.minutes - b.minutes);
 
         console.log(`✅ Update Success: Found ${westTrains.length} West, ${eastTrains.length} East`);
 
-        // 6. RENDER TO SCREEN
         if (typeof window.renderColumn === "function") {
             window.renderColumn("westbound-container", westTrains);
             window.renderColumn("eastbound-container", eastTrains);
         }
     }
 
-    // Run immediately, then every 30s
     update();
     setInterval(update, 30000);
 }
