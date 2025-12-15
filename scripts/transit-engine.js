@@ -1,9 +1,13 @@
 // ==========================================
-// CONFIGURATION (UPDATED WITH NEW IDS)
+// CONFIGURATION
 // ==========================================
-// found via Topology Scan
-const STOPS_WEST = ["6762", "6822"]; // 6762 is the new active ID
-const STOPS_EAST = ["8977", "6831", "6832"]; // 8977 is the new active ID
+
+// Verified Stop IDs for City Hall / Bow Valley College (Free Fare Zone)
+const STOP_CITY_HALL_WEST = "6822"; 
+const STOP_CITY_HALL_EAST = "6831"; 
+
+const ROUTE_RED = "201";
+const ROUTE_BLUE = "202";
 
 // ==========================================
 // UTILITIES
@@ -129,3 +133,4 @@ async function startTransitDashboard() {
     update();
     setInterval(update, 30000);
 }
+
