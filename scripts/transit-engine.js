@@ -1,12 +1,10 @@
 // ==========================================
-// CONFIGURATION
+// TRANSIT ENGINE v8 — Instant-Load Edition
 // ==========================================
 
-// Verified Stop IDs for City Hall / Bow Valley College (Free Fare Zone)
-const STOP_CITY_HALL_WEST = "6822"; 
-const STOP_CITY_HALL_EAST = "6831"; 
-
-const ROUTE_RED = "201";
+const STOP_CITY_HALL_WEST = "6822";
+const STOP_CITY_HALL_EAST = "6831";
+const ROUTE_RED  = "201";
 const ROUTE_BLUE = "202";
 
 // ==========================================
@@ -23,14 +21,14 @@ function getSafeLong(val) {
 
 function calculateMinutes(eta, referenceTime) {
     const diff = eta - referenceTime;
-    if (diff < -90) return -1; 
+    if (diff < -90) return -1;
     return Math.max(0, Math.round(diff / 60));
 }
 
 function mapRouteColor(routeId) {
-    if (routeId.includes(ROUTE_RED)) return "red";
+    if (routeId.includes(ROUTE_RED))  return "red";
     if (routeId.includes(ROUTE_BLUE)) return "blue";
-    return "blue"; 
+    return "blue";
 }
 
 function getDestinationName(lineColor, direction) {
@@ -42,72 +40,56 @@ function getDestinationName(lineColor, direction) {
 }
 
 // ==========================================
-// ALERT LOGIC
+// RENDERING
 // ==========================================
 
-async function updateAlertBanner() {
-    const footer = document.getElementById('service-footer');
-    const textSpan = document.getElementById('service-text');
-    if (!footer || !textSpan) return;
+window.createTrainCard = function(train, index) {
+    const lineColor = train.line === 'red' ? 'line-red' : 'line-blue';
+    const lineName  = train.line === 'red' ? '201 Red Line' : '202 Blue Line';
+    const timeText  = train.minutes === 0 ? 'Now' : train.minutes;
+    const minLabel  = train.minutes === 0 ? '' : '<span>min</span>';
+    const pulse     = train.minutes <= 1 ? 'pulse-text' : '';
+    return `
+        <div class="train-card fade-in" style="animation-delay: ${index * 0.08}s">
+            <div class="line-strip ${lineColor}"></div>
+            <div class="dest-info">
+                <div class="dest-name">${train.destination}</div>
+                <div class="line-name">${lineName}</div>
+            </div>
+            <div class="arrival-info">
+                <div class="minutes ${pulse}">${timeText}${minLabel}</div>
+                <div class="status-badge">${train.status}</div>
+            </div>
+        </div>`;
+};
 
-    try {
-        const feed = await fetchGTFSRT(URL_ALERTS);
-        let activeAlertMsg = "";
-
-        if (feed && feed.entity) {
-            const alertEntity = feed.entity.find(e => 
-                e.alert && e.alert.informedEntity && e.alert.informedEntity.some(ie => 
-                    ie.routeId && (ie.routeId.includes('201') || ie.routeId.includes('202'))
-                )
-            );
-
-            if (alertEntity && alertEntity.alert.headerText && alertEntity.alert.headerText.translation) {
-                activeAlertMsg = alertEntity.alert.headerText.translation[0].text;
-            }
-        }
-
-        if (activeAlertMsg) {
-            textSpan.innerText = "⚠️ SERVICE ALERT: " + activeAlertMsg;
-            footer.className = 'status-alert'; 
-        } else {
-            textSpan.innerText = "✅ Normal Service: All trains running on schedule.";
-            footer.className = 'status-ok'; 
-        }
-    } catch(e) {
-        console.warn("Alert fetch failed", e);
-        textSpan.innerText = "✅ Normal Service: All trains running on schedule."; 
-        footer.className = 'status-ok';
+window.renderColumn = function(containerId, trains) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    if (!trains || trains.length === 0) {
+        container.innerHTML = `<div class="train-card" style="opacity:0.6; justify-content:center;">No departures scheduled</div>`;
+        return;
     }
-}
+    container.innerHTML = trains.map((t, i) => window.createTrainCard(t, i)).join('');
+};
 
 // ==========================================
-// MAIN TRAIN LOGIC
+// FEED PARSING
 // ==========================================
 
-async function buildTrainList() {
-    const feed = await getTripUpdates();
-    
-    if (!feed || !feed.entity) {
-        console.warn("No data received from TripUpdates feed");
-        return { westTrains: [], eastTrains: [] };
-    }
+function parseTrainsFromFeed(feed) {
+    if (!feed || !feed.entity) return { westTrains: [], eastTrains: [] };
 
-    let serverTime = Math.floor(Date.now() / 1000); 
-    if (feed.header && feed.header.timestamp) {
-        const feedTs = getSafeLong(feed.header.timestamp);
-        if (feedTs > 0) serverTime = feedTs;
-    }
-
+    const now = Math.floor(Date.now() / 1000);
     const westTrains = [];
     const eastTrains = [];
     const processedTrips = new Set();
-    
+
     for (const entity of feed.entity) {
         if (!entity.tripUpdate || !entity.tripUpdate.stopTimeUpdate) continue;
 
-        const trip = entity.tripUpdate;
+        const trip   = entity.tripUpdate;
         const tripId = trip.trip.tripId;
-        
         if (processedTrips.has(tripId)) continue;
 
         const routeId = trip.trip.routeId || "";
@@ -116,37 +98,34 @@ async function buildTrainList() {
         const lineColor = mapRouteColor(routeId);
 
         for (const stopUpdate of trip.stopTimeUpdate) {
-            const stopId = stopUpdate.stopId;
-            const arrival = stopUpdate.arrival || stopUpdate.departure; 
+            const stopId  = stopUpdate.stopId;
+            const arrival = stopUpdate.arrival || stopUpdate.departure;
             if (!arrival || !arrival.time) continue;
 
             const timeVal = getSafeLong(arrival.time);
-            const minutes = calculateMinutes(timeVal, serverTime);
-
+            const minutes = calculateMinutes(timeVal, now);
             if (minutes === -1 || minutes > 60) continue;
 
             if (stopId === STOP_CITY_HALL_WEST) {
                 westTrains.push({
                     destination: getDestinationName(lineColor, 'WEST'),
-                    line: lineColor,
-                    minutes: minutes,
+                    line: lineColor, minutes,
                     status: minutes <= 1 ? "Boarding" : "On Time",
-                    tripId: tripId
+                    tripId
                 });
                 processedTrips.add(tripId);
-                break; 
+                break;
             }
 
             if (stopId === STOP_CITY_HALL_EAST) {
                 eastTrains.push({
                     destination: getDestinationName(lineColor, 'EAST'),
-                    line: lineColor,
-                    minutes: minutes,
+                    line: lineColor, minutes,
                     status: minutes <= 1 ? "Boarding" : "On Time",
-                    tripId: tripId
+                    tripId
                 });
                 processedTrips.add(tripId);
-                break; 
+                break;
             }
         }
     }
@@ -154,10 +133,37 @@ async function buildTrainList() {
     westTrains.sort((a, b) => a.minutes - b.minutes);
     eastTrains.sort((a, b) => a.minutes - b.minutes);
 
-    return { 
-        westTrains: westTrains.slice(0, 3), 
-        eastTrains: eastTrains.slice(0, 3) 
+    return {
+        westTrains: westTrains.slice(0, 4),
+        eastTrains: eastTrains.slice(0, 4)
     };
+}
+
+// ==========================================
+// ALERT LOGIC
+// ==========================================
+
+function parseAlertFromFeed(feed) {
+    if (!feed || !feed.entity) return null;
+    const alertEntity = feed.entity.find(e =>
+        e.alert?.informedEntity?.some(ie =>
+            ie.routeId && (ie.routeId.includes('201') || ie.routeId.includes('202'))
+        )
+    );
+    return alertEntity?.alert?.headerText?.translation?.[0]?.text || null;
+}
+
+function renderAlertBanner(alertMsg) {
+    const footer   = document.getElementById('service-footer');
+    const textSpan = document.getElementById('service-text');
+    if (!footer || !textSpan) return;
+    if (alertMsg) {
+        textSpan.innerText = "⚠️ SERVICE ALERT: " + alertMsg;
+        footer.className   = 'status-alert';
+    } else {
+        textSpan.innerText = "✅ Normal Service: All trains running on schedule.";
+        footer.className   = 'status-ok';
+    }
 }
 
 // ==========================================
@@ -165,57 +171,51 @@ async function buildTrainList() {
 // ==========================================
 
 async function startTransitDashboard() {
-    console.log("🚀 CLOCK-PROOF ENGINE v7 STARTED");
-    
-    let failureCount = 0;
+    console.log("🚀 TRANSIT ENGINE v8 — Instant-Load");
 
+    const liveDot = document.getElementById('live-indicator');
+
+    // ── STEP 1: Render cached data IMMEDIATELY (zero network wait) ────────────
+    // This fires synchronously before any fetch, so the slide is never blank.
+    const cachedTrips  = getCachedFeed(URL_TRIP_UPDATES);
+    const cachedAlerts = getCachedFeed(URL_ALERTS);
+
+    if (cachedTrips) {
+        const { westTrains, eastTrains } = parseTrainsFromFeed(cachedTrips);
+        window.renderColumn("westbound-container", westTrains);
+        window.renderColumn("eastbound-container", eastTrains);
+        console.log("📦 Cached trains rendered instantly");
+    }
+    if (cachedAlerts) {
+        renderAlertBanner(parseAlertFromFeed(cachedAlerts));
+    }
+
+    // ── STEP 2: Fetch live data, update display when ready ───────────────────
     async function update() {
-        const liveDot = document.getElementById('live-indicator');
         if (liveDot) liveDot.classList.add('stale');
 
         try {
-            const { westTrains, eastTrains } = await buildTrainList();
-            
-            // Render
-            const westCont = document.getElementById('westbound-container');
-            const eastCont = document.getElementById('eastbound-container');
+            // Fetch both feeds in parallel — not one after the other
+            const [tripFeed, alertFeed] = await Promise.all([
+                getTripUpdates(),
+                fetchGTFSRT(URL_ALERTS)
+            ]);
 
-            // --- UX FIX: EMPTY STATE ---
-            if (westTrains.length === 0 && eastTrains.length === 0) {
-                 // Changed from "No trains found" to "Loading schedule..."
-                 // Added 'train-card' class so it looks beautiful (Glass UI)
-                 const msg = `<div class="train-card" style="opacity:0.6; justify-content:center;">Loading schedule...</div>`;
-                 
-                 if (westCont) westCont.innerHTML = msg;
-                 if (eastCont) eastCont.innerHTML = msg;
-            } else {
-                // Normal Render
-                if (typeof window.renderColumn === "function") {
-                    window.renderColumn("westbound-container", westTrains);
-                    window.renderColumn("eastbound-container", eastTrains);
-                }
-            }
-
-            // Check Alerts
-            await updateAlertBanner();
+            const { westTrains, eastTrains } = parseTrainsFromFeed(tripFeed);
+            window.renderColumn("westbound-container", westTrains);
+            window.renderColumn("eastbound-container", eastTrains);
+            renderAlertBanner(parseAlertFromFeed(alertFeed));
 
             if (liveDot) liveDot.classList.remove('stale');
-            failureCount = 0; 
+            console.log(`✅ Live data rendered — ${westTrains.length}W / ${eastTrains.length}E trains`);
 
-        } catch (e) {
-            console.error("Transit Engine Error:", e);
-            failureCount++;
-            if (failureCount >= 3) {
-                // This message also uses the card style now
-                const safeMessage = `<div class="train-card" style="opacity:0.6; justify-content:center;">Reconnecting...</div>`;
-                const westCont = document.getElementById('westbound-container');
-                const eastCont = document.getElementById('eastbound-container');
-                if (westCont) westCont.innerHTML = safeMessage;
-                if (eastCont) eastCont.innerHTML = safeMessage;
-            }
+        } catch (err) {
+            console.error("Engine update error:", err);
+            if (liveDot) liveDot.classList.add('stale');
+            // Don't wipe the screen — cached data stays visible
         }
     }
 
     update();
-    setInterval(update, 30000); 
+    setInterval(update, 30000);
 }
