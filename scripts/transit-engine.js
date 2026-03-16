@@ -21,7 +21,9 @@ function getSafeLong(val) {
 
 function calculateMinutes(eta, referenceTime) {
     const diff = eta - referenceTime;
-    if (diff < -90) return -1;
+    // Keep trains for up to 3 min past scheduled time (feed updates every 30s,
+    // so a train can appear "past" while still boarding at the platform).
+    if (diff < -180) return -1;
     return Math.max(0, Math.round(diff / 60));
 }
 
@@ -80,7 +82,13 @@ window.renderColumn = function(containerId, trains) {
 function parseTrainsFromFeed(feed) {
     if (!feed || !feed.entity) return { westTrains: [], eastTrains: [] };
 
-    const now = Math.floor(Date.now() / 1000);
+    // Use the feed's own timestamp as the reference clock.
+    // This keeps arrival times in the same time domain as the feed data,
+    // preventing trains from being incorrectly filtered out when the feed
+    // is slightly stale or there's local clock drift.
+    // Fall back to local time only if the feed has no timestamp.
+    const feedTs = feed.header ? getSafeLong(feed.header.timestamp) : 0;
+    const now = feedTs > 0 ? feedTs : Math.floor(Date.now() / 1000);
     const westTrains = [];
     const eastTrains = [];
     const processedTrips = new Set();
@@ -176,15 +184,25 @@ async function startTransitDashboard() {
     const liveDot = document.getElementById('live-indicator');
 
     // ── STEP 1: Render cached data IMMEDIATELY (zero network wait) ────────────
-    // This fires synchronously before any fetch, so the slide is never blank.
+    // Only render cache if the feed itself is fresh enough that its arrival
+    // timestamps are still valid. If the cache is stale, rendering it produces
+    // an empty board (all trains calculate as already departed).
+    const FEED_MAX_AGE_S = 35; // feed updates every 30s, so 35s is a safe ceiling
     const cachedTrips  = getCachedFeed(URL_TRIP_UPDATES);
     const cachedAlerts = getCachedFeed(URL_ALERTS);
 
     if (cachedTrips) {
-        const { westTrains, eastTrains } = parseTrainsFromFeed(cachedTrips);
-        window.renderColumn("westbound-container", westTrains);
-        window.renderColumn("eastbound-container", eastTrains);
-        console.log("📦 Cached trains rendered instantly");
+        const feedTs = cachedTrips.header ? getSafeLong(cachedTrips.header.timestamp) : 0;
+        const ageSeconds = feedTs > 0 ? (Math.floor(Date.now() / 1000) - feedTs) : 999;
+
+        if (ageSeconds <= FEED_MAX_AGE_S) {
+            const { westTrains, eastTrains } = parseTrainsFromFeed(cachedTrips);
+            window.renderColumn("westbound-container", westTrains);
+            window.renderColumn("eastbound-container", eastTrains);
+            console.log(`📦 Cached trains rendered (feed age: ${ageSeconds}s)`);
+        } else {
+            console.log(`⏭️ Cache skipped — feed too old (${ageSeconds}s), waiting for live data`);
+        }
     }
     if (cachedAlerts) {
         renderAlertBanner(parseAlertFromFeed(cachedAlerts));
