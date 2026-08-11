@@ -1,11 +1,16 @@
 // ==========================================
-// TRANSIT ENGINE v10 — Realtime + feed health reporting
+// TRANSIT ENGINE v11 — Realtime primary, scheduled fallback
 // ==========================================
 // Same rendering and layout as v8.
 //
-// Realtime only. Every cycle logs whether the feed actually contains CTrain
-// trips, so an empty board can always be attributed to the right cause:
-// a genuinely quiet period, or Calgary not publishing trains at all.
+// Mirrors how Google Maps handles this feed: use realtime when Calgary is
+// publishing CTrain trips, and fall back to the static schedule when it isn't,
+// rather than showing an empty board.
+//
+// The trigger is whether the feed contains ANY route 201/202 trip system-wide —
+// NOT whether trains are due at City Hall. Those are different questions: zero
+// trains at 3am is correct and must still read as realtime, while zero CTrain
+// trips anywhere in a 470-entity feed means Calgary's LRT pipeline is down.
 // ==========================================
 
 const STOP_CITY_HALL_WEST = "6822";
@@ -152,8 +157,9 @@ function runFeedDiagnostic(feed) {
 // Is the feed carrying CTrain at all? This is the signal that separates
 // "no trains due in the next 60 minutes" from "Calgary stopped publishing LRT".
 function feedHealth(feed) {
-    const out = { entities: 0, ctrainTrips: 0, age: "?" };
+    const out = { entities: 0, ctrainTrips: 0, age: "?", reachable: false };
     if (!feed || !feed.entity) return out;
+    out.reachable = true;
     out.entities = feed.entity.length;
     const ts = feed.header ? getSafeLong(feed.header.timestamp) : 0;
     if (ts > 0) out.age = Math.floor(Date.now() / 1000) - ts;
@@ -256,6 +262,22 @@ function parseAlertFromFeed(feed) {
     return null;
 }
 
+// The header reads "Live Departures". When running on scheduled data that
+// would be a false claim, so the label is swapped to match. Text node is
+// rebuilt after the dot span so no HTML change is needed.
+var _lastHeaderMode = null;
+function setHeaderMode(mode) {
+    if (_lastHeaderMode === mode) return;
+    _lastHeaderMode = mode;
+    const el = document.querySelector('.live-status');
+    if (!el) return;
+    const dot = document.getElementById('live-indicator');
+    el.innerHTML = '';
+    if (dot) el.appendChild(dot);
+    el.appendChild(document.createTextNode(
+        mode === 'scheduled' ? ' Scheduled Departures' : ' Live Departures'));
+}
+
 function renderAlertBanner(alertMsg) {
     const footer   = document.getElementById('service-footer');
     const textSpan = document.getElementById('service-text');
@@ -277,6 +299,9 @@ async function startTransitDashboard() {
     console.log("🚀 TRANSIT ENGINE v9 — Instrumented");
 
     const liveDot = document.getElementById('live-indicator');
+
+    // ── STEP 0: Warm the schedule fallback in the background ────────────────
+    if (typeof loadScheduleData === "function") loadScheduleData();
 
     // ── STEP 1: Render cached data immediately, if it is fresh enough ─────────
     const FEED_MAX_AGE_S = 35;
@@ -314,20 +339,60 @@ async function startTransitDashboard() {
 
             runFeedDiagnostic(tripFeed);
 
-            const parsed = parseTrainsFromFeed(tripFeed);
-            window.renderColumn("westbound-container", parsed.westTrains);
-            window.renderColumn("eastbound-container", parsed.eastTrains);
-            renderAlertBanner(parseAlertFromFeed(alertFeed));
-
-            // Report feed health every cycle so the reason for an empty board is
-            // never ambiguous: "no CTrain in feed" and "no trains due right now"
-            // look identical on screen but are completely different problems.
             const health = feedHealth(tripFeed);
-            if (liveDot) liveDot.classList.remove('stale');
-            console.log("✅ Live — " + parsed.westTrains.length + "W / " + parsed.eastTrains.length +
-                        "E | feed: " + health.entities + " entities, " + health.ctrainTrips +
-                        " CTrain trips, age " + health.age + "s" +
-                        (health.ctrainTrips === 0 ? "  ⚠️ NO CTRAIN IN FEED" : ""));
+            const parsed = parseTrainsFromFeed(tripFeed);
+
+            let west = parsed.westTrains;
+            let east = parsed.eastTrains;
+            let mode = "live";
+
+            // Realtime is authoritative whenever Calgary is publishing ANY CTrain
+            // trip. Only when the feed carries none at all do we treat LRT realtime
+            // as unavailable and switch to scheduled times.
+            // Two cases warrant scheduled times: Calgary is publishing no CTrain
+            // at all, or the feed could not be reached. Both mean we have no
+            // realtime knowledge of trains, and a valid timetable beats a blank.
+            if (!health.reachable || health.ctrainTrips === 0) {
+                const sw = (typeof getScheduledDepartures === "function")
+                         ? getScheduledDepartures(STOP_CITY_HALL_WEST, 4) : [];
+                const se = (typeof getScheduledDepartures === "function")
+                         ? getScheduledDepartures(STOP_CITY_HALL_EAST, 4) : [];
+                if (sw.length > 0 || se.length > 0) {
+                    west = sw;
+                    east = se;
+                    mode = "scheduled";
+                } else if (typeof SCHEDULE_STATE !== "undefined" && SCHEDULE_STATE === "failed") {
+                    mode = "unavailable";
+                }
+            }
+
+            if (mode === "unavailable") {
+                const msg = '<div class="train-card" style="opacity:0.6; justify-content:center;">'
+                          + 'Live times unavailable — calgarytransit.com</div>';
+                const wc = document.getElementById("westbound-container");
+                const ec = document.getElementById("eastbound-container");
+                if (wc) wc.innerHTML = msg;
+                if (ec) ec.innerHTML = msg;
+            } else {
+                window.renderColumn("westbound-container", west);
+                window.renderColumn("eastbound-container", east);
+            }
+
+            renderAlertBanner(parseAlertFromFeed(alertFeed));
+            setHeaderMode(mode === "live" ? "live" : "scheduled");
+
+            // Amber dot whenever the board is not on live data — same signal
+            // Google gives by omitting its realtime annotation.
+            if (liveDot) {
+                if (mode === "live") liveDot.classList.remove('stale');
+                else liveDot.classList.add('stale');
+            }
+
+            console.log((mode === "live" ? "✅ LIVE — " :
+                         mode === "scheduled" ? "🗓️ SCHEDULED — " : "⚠️ UNAVAILABLE — ") +
+                        west.length + "W / " + east.length + "E | feed: " +
+                        health.entities + " entities, " + health.ctrainTrips +
+                        " CTrain trips, age " + health.age + "s");
 
         } catch (err) {
             console.error("Engine update error:", err);
