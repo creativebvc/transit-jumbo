@@ -1,21 +1,16 @@
 // ==========================================
 // SCHEDULE FALLBACK
 // ------------------------------------------
-// Reads scripts/schedule.json (built from Calgary's static GTFS by
-// build-schedule.py) and produces scheduled departures for City Hall.
+// Reads scripts/schedule.json (built by build-schedule.py from Calgary's static
+// GTFS) and yields scheduled departures for City Hall in the same shape the
+// engine uses for realtime arrivals, so the two can be merged.
 //
-// This exists because Calgary's realtime TripUpdates feed intermittently
-// stops publishing CTrain (LRT) trips while continuing to publish buses.
-// When that happens the board falls back to scheduled times instead of
-// going blank. It reverts to realtime automatically the moment the feed
-// starts carrying trains again.
-//
-// XMLHttpRequest rather than fetch, var rather than let/const, and classic
-// loops — consistent with the rest of the BVCTV TV-browser pattern.
+// Rows carry trip_id, which lets the engine drop a scheduled row when the same
+// trip is already present live.
 // ==========================================
 
 var SCHEDULE_DATA = null;
-var SCHEDULE_STATE = "unloaded"; // unloaded | ready | failed
+var SCHEDULE_STATE = "unloaded";   // unloaded | ready | failed
 
 function loadScheduleData(callback) {
     if (SCHEDULE_STATE === "ready" || SCHEDULE_STATE === "failed") {
@@ -31,15 +26,15 @@ function loadScheduleData(callback) {
                 SCHEDULE_DATA = JSON.parse(xhr.responseText);
                 SCHEDULE_STATE = "ready";
                 checkScheduleFreshness();
-                console.log("🗓️ Schedule fallback loaded (valid " +
-                            SCHEDULE_DATA.valid_from + "–" + SCHEDULE_DATA.valid_to + ")");
+                console.log("Schedule fallback loaded (valid " +
+                            SCHEDULE_DATA.valid_from + "-" + SCHEDULE_DATA.valid_to + ")");
             } catch (e) {
                 SCHEDULE_STATE = "failed";
-                console.error("Schedule JSON parse failed:", e);
+                console.error("schedule.json parse failed:", e);
             }
         } else {
             SCHEDULE_STATE = "failed";
-            console.warn("Schedule JSON unavailable (HTTP " + xhr.status + ")");
+            console.warn("schedule.json unavailable (HTTP " + xhr.status + ")");
         }
         if (callback) callback(SCHEDULE_DATA);
     };
@@ -49,31 +44,24 @@ function loadScheduleData(callback) {
     }
 }
 
-function ymd(dateObj) {
-    var m = dateObj.getMonth() + 1;
-    var d = dateObj.getDate();
-    return "" + dateObj.getFullYear() +
-           (m < 10 ? "0" : "") + m +
-           (d < 10 ? "0" : "") + d;
+function _ymd(d) {
+    var m = d.getMonth() + 1, day = d.getDate();
+    return "" + d.getFullYear() + (m < 10 ? "0" : "") + m + (day < 10 ? "0" : "") + day;
 }
 
 function checkScheduleFreshness() {
     if (!SCHEDULE_DATA) return;
-    var today = ymd(new Date());
-    if (today > SCHEDULE_DATA.valid_to) {
-        console.warn("⚠️ schedule.json expired on " + SCHEDULE_DATA.valid_to +
-                     " — re-run build-schedule.py with the latest Calgary GTFS");
+    if (_ymd(new Date()) > SCHEDULE_DATA.valid_to) {
+        console.warn("schedule.json expired on " + SCHEDULE_DATA.valid_to +
+                     " - re-run build-schedule.py with the latest Calgary GTFS");
     }
 }
 
-// Which service_id applies on a given date? Honours calendar_dates exceptions
-// (type 1 = service added that day, type 2 = service removed that day).
-function serviceIdsForDate(dateObj) {
+// Which service_ids run on a given date, honouring calendar_dates exceptions
+// (type 1 = added that day, type 2 = removed that day).
+function _servicesFor(dateObj) {
     if (!SCHEDULE_DATA) return [];
-    var dateStr = ymd(dateObj);
-    var dow = dateObj.getDay(); // 0 = Sunday
-    var active = {};
-    var sid;
+    var dateStr = _ymd(dateObj), dow = dateObj.getDay(), active = {}, sid, i;
 
     for (sid in SCHEDULE_DATA.calendar) {
         if (!SCHEDULE_DATA.calendar.hasOwnProperty(sid)) continue;
@@ -83,76 +71,79 @@ function serviceIdsForDate(dateObj) {
     }
 
     var ex = SCHEDULE_DATA.exceptions || [];
-    for (var i = 0; i < ex.length; i++) {
+    for (i = 0; i < ex.length; i++) {
         if (ex[i].date !== dateStr) continue;
         if (ex[i].type === 1) active[ex[i].service] = true;
         else if (ex[i].type === 2) delete active[ex[i].service];
     }
 
     var out = [];
-    for (sid in active) {
-        if (active.hasOwnProperty(sid)) out.push(sid);
-    }
+    for (sid in active) if (active.hasOwnProperty(sid)) out.push(sid);
     return out;
 }
 
-function collectDepartures(stopId, serviceIds) {
-    var list = [];
-    if (!SCHEDULE_DATA || !SCHEDULE_DATA.stops[stopId]) return list;
-    for (var i = 0; i < serviceIds.length; i++) {
-        var rows = SCHEDULE_DATA.stops[stopId][serviceIds[i]];
-        if (!rows) continue;
-        for (var j = 0; j < rows.length; j++) list.push(rows[j]);
-    }
-    return list;
+function _midnightMs(dateObj) {
+    var d = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), 0, 0, 0, 0);
+    return d.getTime();
 }
 
-// Returns up to `limit` upcoming departures for one platform.
-// Each entry matches the shape parseTrainsFromFeed produces, plus scheduled:true.
-function getScheduledDepartures(stopId, limit) {
+// Returns scheduled departures for BOTH platforms as engine-shaped items.
+// Yesterday's services are included because GTFS times run past 24:00:00,
+// so just after midnight the relevant rows belong to the previous service day.
+function getScheduledArrivals(nowMs, lookaheadMin) {
     if (SCHEDULE_STATE !== "ready") return [];
 
-    var now = new Date();
-    var nowSecs = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+    var horizon = nowMs + (lookaheadMin || 60) * 60000;
+    var today = new Date(nowMs);
+    var yesterday = new Date(nowMs - 86400000);
+    var days = [
+        { date: yesterday, base: _midnightMs(yesterday) },
+        { date: today,     base: _midnightMs(today) }
+    ];
 
-    var candidates = [];
-    var i, row, mins;
+    var DEST = {
+        "6822": { "201": "Tuscany",             "202": "69 St Station" },
+        "6831": { "201": "Somerset-Bridlewood", "202": "Saddletowne" }
+    };
 
-    // Today's service, departures still ahead of us
-    var todayServices = serviceIdsForDate(now);
-    var todayRows = collectDepartures(stopId, todayServices);
-    for (i = 0; i < todayRows.length; i++) {
-        row = todayRows[i];
-        if (row[0] >= nowSecs - 60) {
-            candidates.push([row[0] - nowSecs, row[1], row[2]]);
+    var out = [], stops = ["6822", "6831"], d, s, svc, si, k, rows, r;
+
+    for (d = 0; d < days.length; d++) {
+        svc = _servicesFor(days[d].date);
+        if (!svc.length) continue;
+
+        for (s = 0; s < stops.length; s++) {
+            var stopId = stops[s];
+            var byStop = SCHEDULE_DATA.stops[stopId];
+            if (!byStop) continue;
+
+            for (si = 0; si < svc.length; si++) {
+                rows = byStop[svc[si]];
+                if (!rows) continue;
+
+                for (k = 0; k < rows.length; k++) {
+                    r = rows[k];                       // [secs, route, headsignIdx, tripId]
+                    var ms = days[d].base + r[0] * 1000;
+                    if (ms < nowMs - 60000 || ms > horizon) continue;
+
+                    var dest = SCHEDULE_DATA.headsigns[r[2]];
+                    if (!dest && DEST[stopId]) dest = DEST[stopId][r[1]];
+
+                    out.push({
+                        tripId: r[3] || "",
+                        stopId: stopId,
+                        route: r[1],
+                        destination: dest,
+                        predictedMs: ms,
+                        scheduledMs: ms,
+                        delaySec: null,
+                        source: "scheduled"
+                    });
+                }
+            }
         }
     }
 
-    // Yesterday's service can run past midnight (GTFS times above 24:00:00),
-    // so just after midnight the relevant rows belong to the previous day.
-    var yesterday = new Date(now.getTime() - 86400000);
-    var yRows = collectDepartures(stopId, serviceIdsForDate(yesterday));
-    for (i = 0; i < yRows.length; i++) {
-        row = yRows[i];
-        if (row[0] >= 86400) {
-            var offset = row[0] - 86400 - nowSecs;
-            if (offset >= -60) candidates.push([offset, row[1], row[2]]);
-        }
-    }
-
-    candidates.sort(function (a, b) { return a[0] - b[0]; });
-
-    var out = [];
-    for (i = 0; i < candidates.length && out.length < (limit || 4); i++) {
-        mins = Math.max(0, Math.round(candidates[i][0] / 60));
-        if (mins > 90) break;
-        out.push({
-            destination: SCHEDULE_DATA.headsigns[candidates[i][2]],
-            line: candidates[i][1] === "201" ? "red" : "blue",
-            minutes: mins,
-            status: "Scheduled",
-            scheduled: true
-        });
-    }
+    out.sort(function (a, b) { return a.predictedMs - b.predictedMs; });
     return out;
 }

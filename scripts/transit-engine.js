@@ -1,403 +1,336 @@
 // ==========================================
-// TRANSIT ENGINE v11 — Realtime primary, scheduled fallback
-// ==========================================
-// Same rendering and layout as v8.
+// TRANSIT ENGINE v12
+// ------------------------------------------
+// Realtime primary, scheduled fallback, merged PER STOP AND ROUTE rather than
+// swapped wholesale. If Calgary restores only one line, the board shows live
+// times for that line and scheduled times for the other, instead of forcing
+// both into the same mode.
 //
-// Mirrors how Google Maps handles this feed: use realtime when Calgary is
-// publishing CTrain trips, and fall back to the static schedule when it isn't,
-// rather than showing an empty board.
-//
-// The trigger is whether the feed contains ANY route 201/202 trip system-wide —
-// NOT whether trains are due at City Hall. Those are different questions: zero
-// trains at 3am is correct and must still read as realtime, while zero CTrain
-// trips anywhere in a 470-entity feed means Calgary's LRT pipeline is down.
+// Consumes GTFSDecoder output directly. ES5 for TV browsers: no arrow
+// functions, no optional chaining, no template literals in logic paths.
 // ==========================================
 
-const STOP_CITY_HALL_WEST = "6822";
-const STOP_CITY_HALL_EAST = "6831";
-const ROUTE_RED  = "201";
-const ROUTE_BLUE = "202";
+var STOP_CITY_HALL_WEST = "6822";
+var STOP_CITY_HALL_EAST = "6831";
+var ROUTE_RED  = "201";
+var ROUTE_BLUE = "202";
+
+var MAX_LOOKAHEAD_MIN = 60;
+var DEDUPE_WINDOW_MS  = 180000;   // 3 min: a scheduled row this close to a live
+                                  // prediction for the same stop+route is the
+                                  // same train, so the live one wins.
 
 // ==========================================
-// UTILITIES
+// HELPERS
 // ==========================================
 
-function getSafeLong(val) {
-    if (val === null || val === undefined) return 0;
-    if (typeof val === 'number') return val;
-    if (typeof val === 'string') return parseInt(val, 10) || 0;
-    if (typeof val.toNumber === 'function') return val.toNumber();
-    if (val.low !== undefined) return val.low;
+function num(v) {
+    if (v === null || v === undefined) return 0;
+    if (typeof v === "number") return v;
+    if (typeof v === "string") return parseInt(v, 10) || 0;
+    if (typeof v.toNumber === "function") return v.toNumber();
+    if (v.low !== undefined) return v.low;
     return 0;
 }
 
-function calculateMinutes(eta, referenceTime) {
-    const diff = eta - referenceTime;
-    if (diff < -180) return -1;
-    return Math.max(0, Math.round(diff / 60));
+function routeOf(routeId) {
+    if (!routeId) return null;
+    if (routeId.indexOf(ROUTE_RED) > -1)  return ROUTE_RED;
+    if (routeId.indexOf(ROUTE_BLUE) > -1) return ROUTE_BLUE;
+    return null;
 }
 
-function mapRouteColor(routeId) {
-    if (routeId.indexOf(ROUTE_RED) > -1)  return "red";
-    if (routeId.indexOf(ROUTE_BLUE) > -1) return "blue";
-    return "blue";
-}
+function lineColorOf(route) { return route === ROUTE_RED ? "red" : "blue"; }
 
-function getDestinationName(lineColor, direction) {
-    if (direction === 'WEST') {
-        return lineColor === 'red' ? "Tuscany" : "69 Street";
-    } else {
-        return lineColor === 'red' ? "Somerset" : "Saddletowne";
-    }
-}
-
-// ==========================================
-// RENDERING
-// (index.html overrides these after load; kept here as a fallback)
-// ==========================================
-
-window.createTrainCard = window.createTrainCard || function(train, index) {
-    const lineColor = train.line === 'red' ? 'line-red' : 'line-blue';
-    const lineName  = train.line === 'red' ? '201 Red Line' : '202 Blue Line';
-    const timeText  = train.minutes === 0 ? 'Now' : train.minutes;
-    const minLabel  = train.minutes === 0 ? '' : '<span>min</span>';
-    const pulse     = train.minutes <= 1 ? 'pulse-text' : '';
-    return '<div class="train-card fade-in" style="animation-delay: ' + (index * 0.08) + 's">' +
-           '<div class="line-strip ' + lineColor + '"></div>' +
-           '<div class="dest-info">' +
-           '<div class="dest-name">' + train.destination + '</div>' +
-           '<div class="line-name">' + lineName + '</div>' +
-           '</div>' +
-           '<div class="arrival-info">' +
-           '<div class="minutes ' + pulse + '">' + timeText + minLabel + '</div>' +
-           '<div class="status-badge">' + train.status + '</div>' +
-           '</div></div>';
-};
-
-window.renderColumn = window.renderColumn || function(containerId, trains) {
-    const container = document.getElementById(containerId);
-    if (!container) return;
-    if (!trains || trains.length === 0) {
-        container.innerHTML = '<div class="train-card" style="opacity:0.6; justify-content:center;">No departures scheduled</div>';
-        return;
-    }
-    let html = '';
-    for (let i = 0; i < trains.length; i++) {
-        html += window.createTrainCard(trains[i], i);
-    }
-    container.innerHTML = html;
-};
-
-// ==========================================
-// DIAGNOSTIC — run once per session
-// ==========================================
-// Reports the four facts that determine whether the filter can match:
-//   1. every route_id present in the feed
-//   2. how old the feed's own timestamp is
-//   3. every stop_id served by trips on routes 201/202
-//   4. the raw arrival times found at 6822 / 6831
-// ==========================================
-
-let diagnosticDone = false;
-
-function runFeedDiagnostic(feed) {
-    if (diagnosticDone || !feed || !feed.entity) return;
-    diagnosticDone = true;
-
-    const routes = {};
-    const ctrainStops = {};
-    const hits = [];
-    const now = Math.floor(Date.now() / 1000);
-    const feedTs = feed.header ? getSafeLong(feed.header.timestamp) : 0;
-
-    for (let i = 0; i < feed.entity.length; i++) {
-        const e = feed.entity[i];
-        if (!e.tripUpdate || !e.tripUpdate.trip) continue;
-
-        const rid = e.tripUpdate.trip.routeId || "(none)";
-        routes[rid] = (routes[rid] || 0) + 1;
-
-        if (rid.indexOf(ROUTE_RED) > -1 || rid.indexOf(ROUTE_BLUE) > -1) {
-            const stops = e.tripUpdate.stopTimeUpdate || [];
-            for (let j = 0; j < stops.length; j++) {
-                const s = stops[j];
-                if (!s.stopId) continue;
-                ctrainStops[s.stopId] = true;
-                if (s.stopId === STOP_CITY_HALL_WEST || s.stopId === STOP_CITY_HALL_EAST) {
-                    const a = s.arrival || s.departure;
-                    const t = a ? getSafeLong(a.time) : 0;
-                    hits.push({
-                        route: rid,
-                        stop: s.stopId,
-                        minsFromFeedClock: t && feedTs ? Math.round((t - feedTs) / 60) : "n/a",
-                        minsFromLocalClock: t ? Math.round((t - now) / 60) : "n/a"
-                    });
-                }
-            }
+function titleCase(s) {
+    if (!s) return "";
+    var words = s.toLowerCase().split(/\s+/), out = [], i, w;
+    for (i = 0; i < words.length; i++) {
+        w = words[i];
+        if (!w) continue;
+        if (w === "sw" || w === "nw" || w === "se" || w === "ne" || w === "st") {
+            out.push(w.toUpperCase());
+        } else {
+            out.push(w.charAt(0).toUpperCase() + w.slice(1));
         }
     }
-
-    const routeList = Object.keys(routes).sort();
-    const stopList  = Object.keys(ctrainStops).sort();
-
-    console.log("──────── FEED DIAGNOSTIC ────────");
-    console.log("A. entities in feed:", feed.entity.length);
-    console.log("B. feed timestamp age (s):", feedTs ? (now - feedTs) : "NO TIMESTAMP");
-    console.log("C. distinct route_ids (" + routeList.length + "):", routeList.join(", "));
-    console.log("D. 201/202 present?", routeList.indexOf(ROUTE_RED) > -1 || routeList.indexOf(ROUTE_BLUE) > -1);
-    console.log("E. stop_ids on 201/202 trips (" + stopList.length + "):", stopList.join(", "));
-    console.log("F. matches at 6822/6831:", hits.length ? JSON.stringify(hits.slice(0, 12)) : "NONE");
-    console.log("─────────────────────────────────");
+    return out.join(" ");
 }
 
+var DEFAULT_DEST = {
+    "6822": { "201": "Tuscany",             "202": "69 St Station" },
+    "6831": { "201": "Somerset-Bridlewood", "202": "Saddletowne" }
+};
+
 // ==========================================
-// FEED PARSING
+// LIVE ARRIVALS
 // ==========================================
 
-// Is the feed carrying CTrain at all? This is the signal that separates
-// "no trains due in the next 60 minutes" from "Calgary stopped publishing LRT".
-function feedHealth(feed) {
-    const out = { entities: 0, ctrainTrips: 0, age: "?", reachable: false };
-    if (!feed || !feed.entity) return out;
-    out.reachable = true;
-    out.entities = feed.entity.length;
-    const ts = feed.header ? getSafeLong(feed.header.timestamp) : 0;
-    if (ts > 0) out.age = Math.floor(Date.now() / 1000) - ts;
-    for (let i = 0; i < feed.entity.length; i++) {
-        const tu = feed.entity[i].tripUpdate;
-        if (!tu || !tu.trip) continue;
-        const rid = tu.trip.routeId || "";
-        if (rid.indexOf(ROUTE_RED) > -1 || rid.indexOf(ROUTE_BLUE) > -1) out.ctrainTrips++;
+function liveArrivals(feed, nowMs) {
+    var out = [];
+    if (!feed || !feed.updates) return out;
+
+    var horizon = nowMs + MAX_LOOKAHEAD_MIN * 60000;
+    var i, j;
+
+    for (i = 0; i < feed.updates.length; i++) {
+        var u = feed.updates[i];
+        if (!u.trip) continue;
+
+        var route = routeOf(u.trip.routeId);
+        if (!route) continue;
+        if (u.trip.scheduleRelationship === 3) continue;   // CANCELED
+
+        var stops = u.stopTimeUpdates || [];
+        for (j = 0; j < stops.length; j++) {
+            var stu = stops[j];
+            var stopId = stu.stopId;
+            if (stopId !== STOP_CITY_HALL_WEST && stopId !== STOP_CITY_HALL_EAST) continue;
+            if (stu.scheduleRelationship === 1) continue;   // SKIPPED
+
+            var ev = (stu.departure && stu.departure.time) ? stu.departure : stu.arrival;
+            if (!ev || !ev.time) continue;
+
+            var predictedMs = num(ev.time) * 1000;
+            if (predictedMs < nowMs - 45000 || predictedMs > horizon) continue;
+
+            var delaySec = (ev.delay === null || ev.delay === undefined) ? null : ev.delay;
+            var scheduledMs = (delaySec !== null) ? predictedMs - delaySec * 1000 : null;
+
+            out.push({
+                tripId: u.trip.tripId || "",
+                stopId: stopId,
+                route: route,
+                destination: DEFAULT_DEST[stopId][route],
+                predictedMs: predictedMs,
+                scheduledMs: scheduledMs,
+                delaySec: delaySec,
+                source: "realtime"
+            });
+        }
     }
     return out;
 }
 
-function parseTrainsFromFeed(feed) {
-    if (!feed || !feed.entity) return { westTrains: [], eastTrains: [] };
+// ==========================================
+// MERGE
+// ==========================================
+// A scheduled row is dropped when the same trip is already live, or when a
+// live prediction for the same stop and route sits within the dedupe window.
+// Everything else is kept, so gaps fill without duplicating trains.
 
-    // Reference clock: prefer the feed's own timestamp so arrival times are
-    // compared within the same time domain. Fall back to local time, and also
-    // fall back if the feed timestamp is absurdly stale (>10 min), which would
-    // otherwise push every train into the future and break the >60 min filter.
-    const feedTs = feed.header ? getSafeLong(feed.header.timestamp) : 0;
-    const localNow = Math.floor(Date.now() / 1000);
-    const feedAge = feedTs > 0 ? (localNow - feedTs) : 999999;
-    const now = (feedTs > 0 && Math.abs(feedAge) < 600) ? feedTs : localNow;
-
-    const westTrains = [];
-    const eastTrains = [];
-    const processedTrips = {};
-
-    for (let i = 0; i < feed.entity.length; i++) {
-        const entity = feed.entity[i];
-        if (!entity.tripUpdate || !entity.tripUpdate.stopTimeUpdate) continue;
-
-        const trip = entity.tripUpdate;
-        if (!trip.trip) continue;
-
-        const tripId = trip.trip.tripId || ("idx" + i);
-        if (processedTrips[tripId]) continue;
-
-        const routeId = trip.trip.routeId || "";
-        if (routeId.indexOf(ROUTE_RED) === -1 && routeId.indexOf(ROUTE_BLUE) === -1) continue;
-
-        const lineColor = mapRouteColor(routeId);
-
-        for (let j = 0; j < trip.stopTimeUpdate.length; j++) {
-            const stopUpdate = trip.stopTimeUpdate[j];
-            const stopId  = stopUpdate.stopId;
-            if (stopId !== STOP_CITY_HALL_WEST && stopId !== STOP_CITY_HALL_EAST) continue;
-
-            const arrival = stopUpdate.arrival || stopUpdate.departure;
-            if (!arrival || !arrival.time) continue;
-
-            const timeVal = getSafeLong(arrival.time);
-            const minutes = calculateMinutes(timeVal, now);
-            if (minutes === -1 || minutes > 60) continue;
-
-            const train = {
-                destination: getDestinationName(lineColor, stopId === STOP_CITY_HALL_WEST ? 'WEST' : 'EAST'),
-                line: lineColor,
-                minutes: minutes,
-                status: minutes <= 1 ? "Boarding" : "On Time",
-                tripId: tripId
-            };
-
-            if (stopId === STOP_CITY_HALL_WEST) westTrains.push(train);
-            else eastTrains.push(train);
-
-            processedTrips[tripId] = true;
-            break;
-        }
+function mergeArrivals(live, scheduled) {
+    var liveTripIds = {}, i, j;
+    for (i = 0; i < live.length; i++) {
+        if (live[i].tripId) liveTripIds[live[i].tripId] = true;
     }
 
-    westTrains.sort(function (a, b) { return a.minutes - b.minutes; });
-    eastTrains.sort(function (a, b) { return a.minutes - b.minutes; });
+    var merged = live.slice();
 
-    return {
-        westTrains: westTrains.slice(0, 4),
-        eastTrains: eastTrains.slice(0, 4)
-    };
+    for (i = 0; i < scheduled.length; i++) {
+        var s = scheduled[i];
+        if (s.tripId && liveTripIds[s.tripId]) continue;
+
+        var duplicate = false;
+        for (j = 0; j < live.length; j++) {
+            var l = live[j];
+            if (l.stopId !== s.stopId || l.route !== s.route) continue;
+            var ref = (l.scheduledMs !== null && l.scheduledMs !== undefined)
+                    ? l.scheduledMs : l.predictedMs;
+            if (Math.abs(ref - s.scheduledMs) <= DEDUPE_WINDOW_MS) { duplicate = true; break; }
+        }
+        if (!duplicate) merged.push(s);
+    }
+
+    merged.sort(function (a, b) { return a.predictedMs - b.predictedMs; });
+    return merged;
+}
+
+function toCards(items, stopId, nowMs, limit) {
+    var out = [], i;
+    for (i = 0; i < items.length && out.length < limit; i++) {
+        var it = items[i];
+        if (it.stopId !== stopId) continue;
+
+        var mins = Math.max(0, Math.round((it.predictedMs - nowMs) / 60000));
+        var status;
+        if (it.source === "scheduled") {
+            status = "Scheduled";
+        } else if (it.delaySec !== null && it.delaySec >= 180) {
+            status = "Delayed";
+        } else if (mins <= 1) {
+            status = "Boarding";
+        } else {
+            status = "On Time";
+        }
+
+        out.push({
+            destination: it.destination,
+            line: lineColorOf(it.route),
+            minutes: mins,
+            status: status,
+            scheduled: it.source === "scheduled"
+        });
+    }
+    return out;
 }
 
 // ==========================================
-// ALERT LOGIC
+// FEED HEALTH
+// ==========================================
+// Counts CTrain trips across the whole feed. This is what separates "no trains
+// due right now" (correct, and still live) from "Calgary stopped publishing
+// LRT" (a feed failure). The two look identical on screen otherwise.
+
+function feedHealth(feed, nowMs) {
+    var out = { reachable: false, updates: 0, ctrainTrips: 0, age: "?" };
+    if (!feed || !feed.updates) return out;
+    out.reachable = true;
+    out.updates = feed.updates.length;
+
+    var ts = (feed.header && feed.header.timestamp) ? num(feed.header.timestamp) : 0;
+    if (ts > 0) out.age = Math.floor(nowMs / 1000) - ts;
+
+    for (var i = 0; i < feed.updates.length; i++) {
+        var u = feed.updates[i];
+        if (u.trip && routeOf(u.trip.routeId)) out.ctrainTrips++;
+    }
+    return out;
+}
+
+// ==========================================
+// ALERTS
 // ==========================================
 
-function parseAlertFromFeed(feed) {
-    if (!feed || !feed.entity) return null;
-    for (let i = 0; i < feed.entity.length; i++) {
-        const e = feed.entity[i];
-        if (!e.alert || !e.alert.informedEntity) continue;
-        let relevant = false;
-        for (let j = 0; j < e.alert.informedEntity.length; j++) {
-            const rid = e.alert.informedEntity[j].routeId;
-            if (rid && (rid.indexOf('201') > -1 || rid.indexOf('202') > -1)) { relevant = true; break; }
+function ctrainAlertText(feed, nowMs) {
+    if (!feed || !feed.alerts) return null;
+    var nowSec = Math.floor(nowMs / 1000);
+
+    for (var i = 0; i < feed.alerts.length; i++) {
+        var a = feed.alerts[i];
+        var relevant = false, j;
+
+        for (j = 0; j < (a.selectors || []).length; j++) {
+            var sel = a.selectors[j];
+            if (routeOf(sel.routeId)) { relevant = true; break; }
+            if (sel.stopId === STOP_CITY_HALL_WEST || sel.stopId === STOP_CITY_HALL_EAST) {
+                relevant = true; break;
+            }
         }
-        if (relevant && e.alert.headerText && e.alert.headerText.translation &&
-            e.alert.headerText.translation.length) {
-            return e.alert.headerText.translation[0].text;
+        if (!relevant) continue;
+
+        // Honour active_period so expired notices do not linger on the board.
+        var periods = a.activePeriods || [];
+        if (periods.length) {
+            var active = false;
+            for (j = 0; j < periods.length; j++) {
+                var st = periods[j].start, en = periods[j].end;
+                if ((!st || nowSec >= st) && (!en || nowSec <= en)) { active = true; break; }
+            }
+            if (!active) continue;
         }
+
+        var msg = a.header || a.description || "";
+        msg = msg.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+        if (msg) return msg;
     }
     return null;
 }
 
-// The header reads "Live Departures". When running on scheduled data that
-// would be a false claim, so the label is swapped to match. Text node is
-// rebuilt after the dot span so no HTML change is needed.
-var _lastHeaderMode = null;
+function renderAlertBanner(msg) {
+    var footer = document.getElementById("service-footer");
+    var span = document.getElementById("service-text");
+    if (!footer || !span) return;
+    if (msg) {
+        span.innerText = "SERVICE ALERT: " + msg;
+        footer.className = "status-alert";
+    } else {
+        span.innerText = "Normal Service: All trains running on schedule.";
+        footer.className = "status-ok";
+    }
+}
+
+// The header reads "Live Departures". Showing that above scheduled-only data
+// would be a false claim, so the label follows the actual data source.
+var _headerMode = null;
 function setHeaderMode(mode) {
-    if (_lastHeaderMode === mode) return;
-    _lastHeaderMode = mode;
-    const el = document.querySelector('.live-status');
+    if (_headerMode === mode) return;
+    _headerMode = mode;
+    var el = document.querySelector(".live-status");
     if (!el) return;
-    const dot = document.getElementById('live-indicator');
-    el.innerHTML = '';
+    var dot = document.getElementById("live-indicator");
+    el.innerHTML = "";
     if (dot) el.appendChild(dot);
     el.appendChild(document.createTextNode(
-        mode === 'scheduled' ? ' Scheduled Departures' : ' Live Departures'));
-}
-
-function renderAlertBanner(alertMsg) {
-    const footer   = document.getElementById('service-footer');
-    const textSpan = document.getElementById('service-text');
-    if (!footer || !textSpan) return;
-    if (alertMsg) {
-        textSpan.innerText = "⚠️ SERVICE ALERT: " + alertMsg;
-        footer.className   = 'status-alert';
-    } else {
-        textSpan.innerText = "✅ Normal Service: All trains running on schedule.";
-        footer.className   = 'status-ok';
-    }
+        mode === "scheduled" ? " Scheduled Departures" : " Live Departures"));
 }
 
 // ==========================================
-// ENGINE START
+// ENGINE
 // ==========================================
 
-async function startTransitDashboard() {
-    console.log("🚀 TRANSIT ENGINE v9 — Instrumented");
+function startTransitDashboard() {
+    console.log("TRANSIT ENGINE v12 - realtime + merged schedule fallback");
 
-    const liveDot = document.getElementById('live-indicator');
+    var liveDot = document.getElementById("live-indicator");
+    var cardLimit = 4;
+    var renderedTrains = false;
 
-    // ── STEP 0: Warm the schedule fallback in the background ────────────────
-    if (typeof loadScheduleData === "function") loadScheduleData();
+    function paint(mergedItems, health, nowMs) {
+        var west = toCards(mergedItems, STOP_CITY_HALL_WEST, nowMs, cardLimit);
+        var east = toCards(mergedItems, STOP_CITY_HALL_EAST, nowMs, cardLimit);
 
-    // ── STEP 1: Render cached data immediately, if it is fresh enough ─────────
-    const FEED_MAX_AGE_S = 35;
-    const cachedTrips  = getCachedFeed(URL_TRIP_UPDATES);
-    const cachedAlerts = getCachedFeed(URL_ALERTS);
+        window.renderColumn("westbound-container", west);
+        window.renderColumn("eastbound-container", east);
 
-    if (cachedTrips) {
-        const feedTs = cachedTrips.header ? getSafeLong(cachedTrips.header.timestamp) : 0;
-        const ageSeconds = feedTs > 0 ? (Math.floor(Date.now() / 1000) - feedTs) : 999;
-
-        if (ageSeconds <= FEED_MAX_AGE_S) {
-            const cachedResult = parseTrainsFromFeed(cachedTrips);
-            window.renderColumn("westbound-container", cachedResult.westTrains);
-            window.renderColumn("eastbound-container", cachedResult.eastTrains);
-            console.log("📦 Cached trains rendered (feed age: " + ageSeconds + "s)");
-        } else {
-            console.log("⏭️ Cache skipped — feed age " + ageSeconds + "s, waiting for live data");
+        var anyLive = false, i;
+        for (i = 0; i < mergedItems.length; i++) {
+            if (mergedItems[i].source === "realtime") { anyLive = true; break; }
         }
+
+        var mode = (health.reachable && health.ctrainTrips > 0) ? "live" : "scheduled";
+        setHeaderMode(mode);
+        if (liveDot) {
+            if (mode === "live") liveDot.classList.remove("stale");
+            else liveDot.classList.add("stale");
+        }
+
+        renderedTrains = (west.length + east.length) > 0;
+
+        console.log((mode === "live" ? "LIVE - " : "SCHEDULED - ") +
+                    west.length + "W / " + east.length + "E | feed: " +
+                    health.updates + " updates, " + health.ctrainTrips +
+                    " CTrain trips, age " + health.age + "s" +
+                    (anyLive ? "" : " | all rows from timetable"));
     }
-    if (cachedAlerts) {
-        renderAlertBanner(parseAlertFromFeed(cachedAlerts));
-    }
 
-    // ── STEP 2: Live fetch, both feeds in parallel ───────────────────────────
-    async function update() {
-        if (liveDot) liveDot.classList.add('stale');
+    function update() {
+        var nowMs = Date.now();
+        if (liveDot) liveDot.classList.add("stale");
 
-        try {
-            const results = await Promise.all([
-                getTripUpdates(),
-                fetchGTFSRT(URL_ALERTS)
-            ]);
-            const tripFeed  = results[0];
-            const alertFeed = results[1];
+        return Promise.all([getTripUpdates(), getAlerts()]).then(function (res) {
+            var tripFeed = res[0], alertFeed = res[1];
+            var health = feedHealth(tripFeed, nowMs);
 
-            runFeedDiagnostic(tripFeed);
+            var live = liveArrivals(tripFeed, nowMs);
+            var scheduled = (typeof getScheduledArrivals === "function")
+                          ? getScheduledArrivals(nowMs, MAX_LOOKAHEAD_MIN) : [];
 
-            const health = feedHealth(tripFeed);
-            const parsed = parseTrainsFromFeed(tripFeed);
-
-            let west = parsed.westTrains;
-            let east = parsed.eastTrains;
-            let mode = "live";
-
-            // Realtime is authoritative whenever Calgary is publishing ANY CTrain
-            // trip. Only when the feed carries none at all do we treat LRT realtime
-            // as unavailable and switch to scheduled times.
-            // Two cases warrant scheduled times: Calgary is publishing no CTrain
-            // at all, or the feed could not be reached. Both mean we have no
-            // realtime knowledge of trains, and a valid timetable beats a blank.
-            if (!health.reachable || health.ctrainTrips === 0) {
-                const sw = (typeof getScheduledDepartures === "function")
-                         ? getScheduledDepartures(STOP_CITY_HALL_WEST, 4) : [];
-                const se = (typeof getScheduledDepartures === "function")
-                         ? getScheduledDepartures(STOP_CITY_HALL_EAST, 4) : [];
-                if (sw.length > 0 || se.length > 0) {
-                    west = sw;
-                    east = se;
-                    mode = "scheduled";
-                } else if (typeof SCHEDULE_STATE !== "undefined" && SCHEDULE_STATE === "failed") {
-                    mode = "unavailable";
-                }
-            }
-
-            if (mode === "unavailable") {
-                const msg = '<div class="train-card" style="opacity:0.6; justify-content:center;">'
-                          + 'Live times unavailable — calgarytransit.com</div>';
-                const wc = document.getElementById("westbound-container");
-                const ec = document.getElementById("eastbound-container");
-                if (wc) wc.innerHTML = msg;
-                if (ec) ec.innerHTML = msg;
-            } else {
-                window.renderColumn("westbound-container", west);
-                window.renderColumn("eastbound-container", east);
-            }
-
-            renderAlertBanner(parseAlertFromFeed(alertFeed));
-            setHeaderMode(mode === "live" ? "live" : "scheduled");
-
-            // Amber dot whenever the board is not on live data — same signal
-            // Google gives by omitting its realtime annotation.
-            if (liveDot) {
-                if (mode === "live") liveDot.classList.remove('stale');
-                else liveDot.classList.add('stale');
-            }
-
-            console.log((mode === "live" ? "✅ LIVE — " :
-                         mode === "scheduled" ? "🗓️ SCHEDULED — " : "⚠️ UNAVAILABLE — ") +
-                        west.length + "W / " + east.length + "E | feed: " +
-                        health.entities + " entities, " + health.ctrainTrips +
-                        " CTrain trips, age " + health.age + "s");
-
-        } catch (err) {
+            paint(mergeArrivals(live, scheduled), health, nowMs);
+            renderAlertBanner(ctrainAlertText(alertFeed, nowMs));
+        })["catch"](function (err) {
             console.error("Engine update error:", err);
-            if (liveDot) liveDot.classList.add('stale');
-        }
+            if (liveDot) liveDot.classList.add("stale");
+        });
+    }
+
+    // schedule.json loads asynchronously, so the first update() can run before
+    // it is available. If that left the board empty, repaint the moment it
+    // lands rather than waiting out the 30s cycle.
+    if (typeof loadScheduleData === "function") {
+        loadScheduleData(function () {
+            if (!renderedTrains) update();
+        });
     }
 
     update();
