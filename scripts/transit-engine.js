@@ -1,8 +1,11 @@
 // ==========================================
-// TRANSIT ENGINE v9 — Instrumented
+// TRANSIT ENGINE v10 — Realtime + feed health reporting
 // ==========================================
-// Same rendering and layout as v8. Adds a diagnostic pass that reports
-// exactly where trains are lost between the feed and the screen.
+// Same rendering and layout as v8.
+//
+// Realtime only. Every cycle logs whether the feed actually contains CTrain
+// trips, so an empty board can always be attributed to the right cause:
+// a genuinely quiet period, or Calgary not publishing trains at all.
 // ==========================================
 
 const STOP_CITY_HALL_WEST = "6822";
@@ -145,6 +148,23 @@ function runFeedDiagnostic(feed) {
 // ==========================================
 // FEED PARSING
 // ==========================================
+
+// Is the feed carrying CTrain at all? This is the signal that separates
+// "no trains due in the next 60 minutes" from "Calgary stopped publishing LRT".
+function feedHealth(feed) {
+    const out = { entities: 0, ctrainTrips: 0, age: "?" };
+    if (!feed || !feed.entity) return out;
+    out.entities = feed.entity.length;
+    const ts = feed.header ? getSafeLong(feed.header.timestamp) : 0;
+    if (ts > 0) out.age = Math.floor(Date.now() / 1000) - ts;
+    for (let i = 0; i < feed.entity.length; i++) {
+        const tu = feed.entity[i].tripUpdate;
+        if (!tu || !tu.trip) continue;
+        const rid = tu.trip.routeId || "";
+        if (rid.indexOf(ROUTE_RED) > -1 || rid.indexOf(ROUTE_BLUE) > -1) out.ctrainTrips++;
+    }
+    return out;
+}
 
 function parseTrainsFromFeed(feed) {
     if (!feed || !feed.entity) return { westTrains: [], eastTrains: [] };
@@ -299,9 +319,15 @@ async function startTransitDashboard() {
             window.renderColumn("eastbound-container", parsed.eastTrains);
             renderAlertBanner(parseAlertFromFeed(alertFeed));
 
+            // Report feed health every cycle so the reason for an empty board is
+            // never ambiguous: "no CTrain in feed" and "no trains due right now"
+            // look identical on screen but are completely different problems.
+            const health = feedHealth(tripFeed);
             if (liveDot) liveDot.classList.remove('stale');
-            console.log("✅ Live data rendered — " + parsed.westTrains.length + "W / " +
-                        parsed.eastTrains.length + "E trains");
+            console.log("✅ Live — " + parsed.westTrains.length + "W / " + parsed.eastTrains.length +
+                        "E | feed: " + health.entities + " entities, " + health.ctrainTrips +
+                        " CTrain trips, age " + health.age + "s" +
+                        (health.ctrainTrips === 0 ? "  ⚠️ NO CTRAIN IN FEED" : ""));
 
         } catch (err) {
             console.error("Engine update error:", err);
