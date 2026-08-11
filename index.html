@@ -99,6 +99,13 @@
             background: rgba(0,0,0,0.1); padding: 4px 8px; border-radius: 4px;
             margin-top: 6px; display: inline-block;
         }
+        /* Scheduled (non-realtime) times: same shape, quieter treatment so the
+           board never implies live tracking it does not have. */
+        .status-badge.badge-scheduled {
+            background: rgba(0,0,0,0.18);
+            opacity: 0.75;
+            font-weight: 600;
+        }
         .fade-in { animation: fadeIn 0.5s ease-out forwards; opacity: 0; }
         @keyframes fadeIn { to { opacity: 1; } }
         .pulse-text { animation: pulse 1.5s infinite; }
@@ -173,7 +180,8 @@
     <script src="https://cdn.jsdelivr.net/npm/protobufjs@7.2.4/dist/protobuf.min.js"></script>
     <script src="scripts/proto-loader.js"></script>
     <script src="scripts/gtfs-rt-api.js"></script>
-    <script src="scripts/transit-engine.js?v=16"></script>
+    <script src="scripts/schedule-loader.js?v=17"></script>
+    <script src="scripts/transit-engine.js?v=17"></script>
 
     <script>
         function updateClock() {
@@ -200,7 +208,7 @@
                     </div>
                     <div class="arrival-info">
                         <div class="minutes ${pulse}">${timeText}${minLabel}</div>
-                        <div class="status-badge">${train.status}</div>
+                        <div class="status-badge${train.scheduled ? ' badge-scheduled' : ''}">${train.status}</div>
                     </div>
                 </div>
             `;
@@ -211,7 +219,7 @@
             if (!container) return;
             const visibleTrains = trains.slice(0, 2);
             if (visibleTrains.length === 0) {
-                container.innerHTML = `<div class="train-card" style="opacity:0.7; justify-content:center;">Loading schedule...</div>`;
+                container.innerHTML = `<div class="train-card" style="opacity:0.7; justify-content:center;">No departures in the next hour</div>`;
             } else {
                 container.innerHTML = visibleTrains.map((train, index) => window.createTrainCard(train, index)).join('');
             }
@@ -225,7 +233,3 @@
     </script>
 </body>
 </html>
-
-
-
-
