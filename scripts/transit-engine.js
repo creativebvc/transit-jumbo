@@ -202,24 +202,83 @@ function feedHealth(feed, nowMs) {
 // ALERTS
 // ==========================================
 
+// Every CTrain station except ours. Calgary scopes station-specific notices to
+// the whole route (the Crowfoot elevator alert is informed_entity route_id
+// "201", with no stop selector), so a route-level alert naming another station
+// would otherwise appear on this board despite being irrelevant here.
+var OTHER_STATIONS = [
+    "1 street", "3 street", "4 street", "6 street", "7 street", "8 street",
+    "39 avenue", "45 street", "69 street", "anderson", "banff trail",
+    "barlow", "max bell", "brentwood", "bridgeland", "memorial",
+    "canyon meadows", "centre street", "chinook", "crowfoot", "dalhousie",
+    "downtown west", "west kerby", "erlton", "stampede", "fish creek",
+    "lacombe", "franklin", "heritage", "lions park", "marlborough",
+    "martindale", "mcknight", "westwinds", "rundle", "sait", "auarts",
+    "jubilee", "saddletowne", "shaganappi", "shawnessy", "sirocco",
+    "somerset", "bridlewood", "southland", "sunalta", "sunnyside",
+    "tuscany", "university", "victoria park", "westbrook", "whitehorn", "zoo"
+];
+
+// Names that mean this station, in any of the forms Calgary writes them.
+var OUR_STATION = ["city hall", "bow valley"];
+
+function mentionsOurStation(lower) {
+    for (var i = 0; i < OUR_STATION.length; i++) {
+        if (lower.indexOf(OUR_STATION[i]) > -1) return true;
+    }
+    return false;
+}
+
+function mentionsOtherStation(lower) {
+    for (var i = 0; i < OTHER_STATIONS.length; i++) {
+        if (lower.indexOf(OTHER_STATIONS[i]) > -1) return true;
+    }
+    return false;
+}
+
+function stripHtml(s) {
+    if (!s) return "";
+    return s.replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ")
+            .replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+}
+
+// Alerts are ranked, not just filtered:
+//   2 = scoped to one of our stops, or names this station     -> always show
+//   1 = line-wide, names no specific station                  -> show
+//   0 = names another station and not ours                    -> suppress
+function alertRelevance(a, text) {
+    var lower = text.toLowerCase();
+    var i, sel;
+
+    for (i = 0; i < (a.selectors || []).length; i++) {
+        sel = a.selectors[i];
+        if (sel.stopId === STOP_CITY_HALL_WEST || sel.stopId === STOP_CITY_HALL_EAST) return 2;
+    }
+    if (mentionsOurStation(lower)) return 2;
+    if (mentionsOtherStation(lower)) return 0;
+    return 1;
+}
+
 function ctrainAlertText(feed, nowMs) {
     if (!feed || !feed.alerts) return null;
     var nowSec = Math.floor(nowMs / 1000);
+    var best = null, bestRank = 0;
+    var i, j;
 
-    for (var i = 0; i < feed.alerts.length; i++) {
+    for (i = 0; i < feed.alerts.length; i++) {
         var a = feed.alerts[i];
-        var relevant = false, j;
 
+        var touchesUs = false;
         for (j = 0; j < (a.selectors || []).length; j++) {
             var sel = a.selectors[j];
-            if (routeOf(sel.routeId)) { relevant = true; break; }
+            if (routeOf(sel.routeId)) { touchesUs = true; break; }
             if (sel.stopId === STOP_CITY_HALL_WEST || sel.stopId === STOP_CITY_HALL_EAST) {
-                relevant = true; break;
+                touchesUs = true; break;
             }
         }
-        if (!relevant) continue;
+        if (!touchesUs) continue;
 
-        // Honour active_period so expired notices do not linger on the board.
+        // Respect active_period so expired notices do not linger.
         var periods = a.activePeriods || [];
         if (periods.length) {
             var active = false;
@@ -230,11 +289,22 @@ function ctrainAlertText(feed, nowMs) {
             if (!active) continue;
         }
 
-        var msg = a.header || a.description || "";
-        msg = msg.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-        if (msg) return msg;
+        var msg = stripHtml(a.header) || stripHtml(a.description);
+        if (!msg) continue;
+
+        var rank = alertRelevance(a, msg);
+        if (rank === 0) continue;
+
+        if (rank > bestRank) {
+            bestRank = rank;
+            best = msg;
+            if (rank === 2) break;   // nothing outranks a stop-scoped alert
+        }
     }
-    return null;
+
+    if (!best) return null;
+    if (best.length > 220) best = best.slice(0, 217) + "...";
+    return best;
 }
 
 function renderAlertBanner(msg) {
