@@ -180,15 +180,25 @@
     <!-- Standalone GTFS-RT decoder: no protobufjs, no CDN, no .proto file. -->
     <script src="scripts/gtfs-decoder.js?v=18"></script>
     <script src="scripts/gtfs-rt-api.js?v=18"></script>
-    <script src="scripts/schedule-loader.js?v=18"></script>
+    <script src="scripts/alberta-time.js?v=19"></script>
+    <script src="scripts/schedule-loader.js?v=19"></script>
     <script src="scripts/transit-engine.js?v=18"></script>
 
     <script>
+        // Shows Alberta Time computed from the UTC clock (scripts/alberta-time.js),
+        // NOT the TV's own time zone, which is an hour off on older firmware.
         function updateClock() {
             const now = new Date();
-            document.getElementById('clock').textContent = now.toLocaleTimeString('en-US', {
-                hour: 'numeric', minute: '2-digit', hour12: true
-            });
+            const clockEl = document.getElementById('clock');
+            if (!clockEl) return;
+            if (typeof albertaClockText === 'function') {
+                clockEl.textContent = albertaClockText(now.getTime());
+            } else {
+                // alberta-time.js missing: fall back to the TV's own time
+                clockEl.textContent = now.toLocaleTimeString('en-US', {
+                    hour: 'numeric', minute: '2-digit', hour12: true
+                });
+            }
         }
         setInterval(updateClock, 1000);
         updateClock();
