@@ -44,9 +44,10 @@ function loadScheduleData(callback) {
     }
 }
 
+// All date/day maths below uses Alberta Time (scripts/alberta-time.js), never
+// the TV's own time zone, which can be an hour off on older firmware.
 function _ymd(d) {
-    var m = d.getMonth() + 1, day = d.getDate();
-    return "" + d.getFullYear() + (m < 10 ? "0" : "") + m + (day < 10 ? "0" : "") + day;
+    return albertaYmd(d.getTime());
 }
 
 function checkScheduleFreshness() {
@@ -61,7 +62,7 @@ function checkScheduleFreshness() {
 // (type 1 = added that day, type 2 = removed that day).
 function _servicesFor(dateObj) {
     if (!SCHEDULE_DATA) return [];
-    var dateStr = _ymd(dateObj), dow = dateObj.getDay(), active = {}, sid, i;
+    var dateStr = _ymd(dateObj), dow = albertaDow(dateObj.getTime()), active = {}, sid, i;
 
     for (sid in SCHEDULE_DATA.calendar) {
         if (!SCHEDULE_DATA.calendar.hasOwnProperty(sid)) continue;
@@ -83,8 +84,7 @@ function _servicesFor(dateObj) {
 }
 
 function _midnightMs(dateObj) {
-    var d = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), 0, 0, 0, 0);
-    return d.getTime();
+    return albertaMidnightMs(dateObj.getTime());
 }
 
 // Returns scheduled departures for BOTH platforms as engine-shaped items.
